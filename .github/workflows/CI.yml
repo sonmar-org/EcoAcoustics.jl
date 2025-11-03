@@ -24,7 +24,11 @@ jobs:
       fail-fast: false
       matrix:
         version:
+<<<<<<< HEAD
           - 'lts`'
+=======
+          - 'lts'
+>>>>>>> 2104a73 (Fix julia versions in CI)
           - '1.12'
           - 'pre'
         os:
