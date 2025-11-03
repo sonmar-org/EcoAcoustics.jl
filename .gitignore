@@ -1,3 +1,7 @@
 /Manifest*.toml
 /docs/Manifest*.toml
 /docs/build/
+
+documenter_key
+documenter_key.pub
+
