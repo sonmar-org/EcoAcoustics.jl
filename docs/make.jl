@@ -15,3 +15,11 @@ makedocs(;
         "Home" => "index.md",
     ],
 )
+
+deploydocs(;
+    repo = "github.com/sonmar-org/EcoAcoustics.jl.git",
+    branch = "gh-pages",
+    devbranch = "dev",
+)
+
+
