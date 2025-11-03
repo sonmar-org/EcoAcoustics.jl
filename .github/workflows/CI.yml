@@ -25,7 +25,7 @@ jobs:
       matrix:
         version:
 <<<<<<< HEAD
-          - 'lts`'
+          - 'lts'
 =======
           - 'lts'
 >>>>>>> 2104a73 (Fix julia versions in CI)
