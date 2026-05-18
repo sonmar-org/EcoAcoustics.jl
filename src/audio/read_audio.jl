@@ -1,5 +1,5 @@
-using FileIO: load
 using Dates
+using FLAC: FLACDecoder
 using WAV: wavread
 
 # ─── Internal helpers for RIFF header reading / writing ──────────────────────
@@ -101,19 +101,35 @@ function _wavread_corrected(path::AbstractString;
     end
 end
 
-# ─── Internal: normalize FileIO.load outputs into (sig::Vector{Float64}, fs::Float32)
+# ─── Internal: normalize audio loader outputs into (sig::Vector{Float64}, fs::Float32)
+#
+# Purpose:     Convert the raw return value from WAV.jl or FLAC.jl into a
+#              plain (Vector{Float64}, Float32) pair for the Audiodata constructor.
+# Constraints: Input must be a Tuple whose first element is either a
+#              Vector{<:Real} (mono) or a Matrix{<:Real} with exactly one
+#              column (mono stored as N×1). Any other shape throws immediately.
+# Fails when:  Input is not a Tuple, or audio has more than one channel.
+#
+# Supported shapes:
+#   WAV.jl  → (Matrix{Float64}(N,1), fs, nbits, chunks)  — N×1 matrix, Float64
+#   FLAC.jl → (Matrix{Float32}(N,1), Int32(fs))          — N×1 matrix, Float32
+#             or (Vector{Float32}(N), Int32(fs))          — 1D for truncated reads
 function _normalize_loaded_audio(x)
-    if x isa Tuple
-        # WAV.jl: (data, fs, nbits, chunks) or (data, fs)
-        data = x[1]
-        fs   = x[2]
-    else
-        # LibSndFile/FileIO: SampleBuf from SampledSignals.jl
-        data = Array(x)                     # N or N×C
-        fs   = getfield(x, :samplerate)     # SampleBuf has this field
+    if !(x isa Tuple)
+        error("_normalize_loaded_audio: expected a Tuple from WAV.jl or FLAC.jl, " *
+              "got $(typeof(x))")
     end
+
+    data = x[1]   # audio samples: Vector or Matrix, Float32 or Float64
+    fs   = x[2]   # sample rate (Int32 from FLAC.jl, Float64 from WAV.jl)
+
+    # FLAC.jl returns an N×1 Matrix{Float32} (normal) or a Vector{Float32} (truncated
+    # read, where the stream ended early). WAV.jl returns an N×1 Matrix{Float64}.
+    # All three cases reduce to the same mono Vector{Float64} here.
+    # `Float64.(...)` converts each element. `vec(data[:, 1])` extracts column 1
+    # as a 1D vector (`data[:, 1]` = all rows, first column).
     sig =
-        data isa AbstractVector ? Float64.(data) :
+        data isa AbstractVector                          ? Float64.(data) :
         (data isa AbstractMatrix && size(data, 2) == 1) ? Float64.(vec(data[:, 1])) :
         error("Only mono audio supported. Got array of size $(size(data)).")
 
@@ -138,8 +154,12 @@ Arguments:
 - `recorder::AbstractString = "unknown"`:
     Recorder family name (e.g. `"rockhopper"`, `"sm3m"`, `"ls1x"`, `"snap"`).
     Used to select filename parsing rules and calibration profile.
-- `lat::Union{Float64,Missing} = missing` / `lon::Union{Float64,Missing} = missing`:
-    Recorder location in decimal degrees. Override any location parsed from filename.
+- `lat::Union{Float64,Missing} = missing`:
+    Recorder latitude in decimal degrees (positive = North). Overrides any value
+    parsed from the filename. Leave as `missing` when location is unknown.
+- `lon::Union{Float64,Missing} = missing`:
+    Recorder longitude in decimal degrees (positive = East). Overrides any value
+    parsed from the filename. Leave as `missing` when location is unknown.
 - `site_id::Union{String,Nothing} = nothing`:
     Deployment site identifier (e.g. `"T1-C"`). Override for filename-parsed value.
 - `strict::Bool = false`:
@@ -153,7 +173,9 @@ Constraints: Only mono audio is supported. Multi-channel files will throw an err
              Keyword arguments act as overrides: filename-parsed values are used when
              a keyword argument is not supplied (i.e. still at its default).
 
-Fails when:  File cannot be read, audio is not mono, or signal is empty.
+Fails when:  File cannot be read or is corrupt; audio is not mono; signal is
+             empty after decoding; file extension is not `.wav` or `.flac`
+             (throws `ArgumentError` — convert AIF with `sox input.aif output.flac`).
 
 Example:
 ```julia
@@ -193,9 +215,21 @@ function read_audio(path::AbstractString;
     # Merge timezone: only source is the filename parser for now.
     merged_timezone = filename_meta.timezone
 
-    # WAV dispatch: recorders with fix_wav_header=true (e.g. DMON2) always use
-    # header correction silently. All others use wavread directly; if that
-    # throws, attempt correction once with a warning (battery-dropout fallback).
+    # Dispatch on file extension. In Julia, if/elseif/else is an expression —
+    # `raw` receives whatever value the matching branch returns (the audio data
+    # as a tuple), rather than executing the branch for side-effects only.
+    #
+    # .wav  — WAV.jl (wavread). Recorders with fix_wav_header=true (e.g. DMON2)
+    #         always use the in-memory RIFF correction path silently; all others
+    #         try wavread directly and fall back to correction with a warning on
+    #         any exception (battery-dropout safety net).
+    #
+    # .flac — FLAC.jl direct (FLACDecoder). FileIO/LibSndFile is intentionally
+    #         bypassed; see CLAUDE.md Key Constraints. Returns (Matrix{Float32},
+    #         Int32) which _normalize_loaded_audio handles via the Tuple branch.
+    #
+    # other — unsupported in v1. AIF files should be converted with:
+    #         sox input.aif output.flac
     profile = get(RECORDER_PROFILES, String(recorder), nothing)
     raw = if ext == ".wav"
         if profile !== nothing && profile.fix_wav_header
@@ -207,8 +241,39 @@ function read_audio(path::AbstractString;
                 _wavread_corrected(path; warn=true, original_error=e)
             end
         end
+
+    elseif ext == ".flac"
+        # `local f` is required because Julia scopes variables to the block in
+        # which they are first assigned. Without it, `f` would be invisible outside
+        # the try block, and the lines below the catch could not use it.
+        local f
+        try
+            f = FLACDecoder(String(path))  # FLACDecoder requires String, not AbstractString
+        catch e
+            # sprint(showerror, e) converts the exception object to a human-readable
+            # string so it can be embedded in our own error message.
+            throw(ErrorException(
+                "read_audio: cannot read FLAC file \"$path\": $(sprint(showerror, e))"
+            ))
+        end
+        # channels == 0 means no STREAMINFO block was parsed — empty or wholly corrupt file.
+        if f.metadata.channels == 0
+            error("read_audio: \"$path\" is not a valid FLAC file or contains no audio " *
+                  "(STREAMINFO metadata missing)")
+        end
+        # read and length here dispatch on FLACDecoder — FLAC.jl extends the standard
+        # Base.read and Base.length to work on its decoder type. Returns
+        # Array{Float32,2}(nsamples, channels); may be fewer rows than length(f)
+        # if the file is truncated (battery dropout).
+        data = read(f, length(f))
+        (data, Int32(f.metadata.samplerate))
+
     else
-        load(path)
+        throw(ArgumentError(
+            "read_audio: unsupported audio format \"$ext\" in \"$path\". " *
+            "EcoAcoustics.jl v1 supports .wav and .flac only. " *
+            "Convert AIF files with: sox input.aif output.flac"
+        ))
     end
 
     sig, fs = _normalize_loaded_audio(raw)

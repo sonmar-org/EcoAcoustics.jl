@@ -2,7 +2,6 @@ using Test
 using EcoAcoustics
 using Dates
 using WAV
-using LibSndFile   # important: this registers FLAC, WAV, AIFF, etc. with FileIO
 
 @testset "read_audio basic WAV (test_real.wav)" begin
     audio_file = joinpath(TEST_DIR, "test_real.wav")
@@ -55,7 +54,7 @@ end
     @test maximum(abs.(audio.sig)) < 10  # loosen this if needed
 end
 
-#  This is for future AIF support by LibSndFile...maybe we do something
+# AIF is not supported in v1. Convert with: sox input.aif output.flac
 # @testset "read_audio basic AIFF (test_real.aiff)" begin
 #     audio_file = joinpath(TEST_DIR, "test_real.aiff")
 
