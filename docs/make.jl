@@ -13,6 +13,8 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Filename parsing and metadata" => "metadata.md",
+        "Audio sources and time-based access" => "sources.md",
     ],
 )
 

@@ -1,6 +1,21 @@
+@info "LOAD_PATH in test process" Base.load_path()
+
 using EcoAcoustics
 using Test
 
-@testset "EcoAcoustics.jl" begin
-    # Write your tests here.
-end
+const TEST_DIR = joinpath(@__DIR__, "test_files")
+
+#@testset "EcoAcoustics.jl" begin
+
+    include("test_audiodata.jl")
+    include("test_normalize_audio.jl")
+    include("test_read_audio_api.jl")
+    include("test_read_audio.jl")
+    include("test_audio_io.jl")
+    include("recorder_tests/test_filename_formats.jl")
+    include("recorder_tests/test_calibration.jl")
+    include("test_sources.jl")
+    include("test_index.jl")
+    include("test_indexed_file_source.jl")
+    include("test_chunks.jl")
+#end

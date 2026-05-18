@@ -1,7 +1,8 @@
 /Manifest*.toml
 /docs/Manifest*.toml
 /docs/build/
-
+CLAUDE.md
 documenter_key
 documenter_key.pub
+/old_ecoacoustics/
 

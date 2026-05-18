@@ -1,0 +1,193 @@
+"""
+    parse_filename(path; recorder="unknown", strict=false)
+
+Parse basic metadata from an audio filename.
+
+This extracts *candidate* metadata from the filename only.  
+It does **not** read audio data or perform calibration lookup.  
+The result is intended to be merged with recorder profiles, XML
+metadata, and/or user-provided overrides inside `read_audio`.
+
+Arguments
+---------
+- `path::AbstractString`:
+    Path to the audio file. Only the basename is inspected.
+
+- `recorder::AbstractString="unknown"`:
+    Recorder family (e.g. `"rockhopper"`, `"ls1x"`, `"sm3m"`, `"snap"`).
+    Used to select recorder-specific parsing rules via `RecorderProfile`.
+    If a profile defines a custom `parser` function, that function
+    handles the entire filename parse.
+
+- `strict::Bool=false`:
+    Controls how parsing failures are reported. This function **never
+    throws** because a field is missing. It always returns the same
+    `NamedTuple` shape. With `strict=false` (default), failures emit
+    warnings; with `strict=true`, warnings are more prominent but
+    validation still occurs later in `read_audio` after merging all
+    metadata sources.
+
+Returns
+-------
+A `NamedTuple` with fields:
+
+- `timestamp::Union{DateTime,Nothing}`:
+    Recording start time inferred from the filename (UTC if an explicit
+    `"Z"` suffix is present; otherwise timezone is unknown).  
+    `nothing` if no timestamp could be parsed.
+
+- `timezone::Union{String,Nothing}`:
+    `"UTC"` for Rockhopper-style `"Z"` timestamps; otherwise `nothing`.
+
+- `lat::Union{Float64,Missing}` / `lon::Union{Float64,Missing}`:
+    Recorder latitude/longitude if encoded in the filename.  
+    `missing` otherwise.
+
+- `site_id::Union{String,Nothing}`:
+    Recorder or deployment site identifier, if present.
+
+- `recorder_id::Union{String,Nothing}`:
+    Device-specific recorder identifier, if present.
+
+Notes
+-----
+- Recorder-specific parsing behavior is defined by `RecorderProfile`.
+  If a profile provides a custom `parser` function (e.g. SNAP’s `YYMMDD`
+  → `20YYMMDD` rule), `parse_filename` delegates to that function.
+
+- Unknown recorders do not fall back to generic parsing.
+  Instead, all fields default to `nothing`/`missing` and a warning is issued.
+
+  Filename patterns must be defined explicitly via a `RecorderProfile`.
+  Users may either:
+    • add a new recorder profile, or
+    • provide missing metadata manually when calling `read_audio` (e.g. read_audio(path; starttime=..., lat=..., lon=...)).
+
+  This design prevents silent mis-parsing and keeps all filename rules explicit.
+
+- This function isolates filename parsing only. Required metadata
+  (timestamp, timezone, location) is validated later in `read_audio`
+  *after* merging filename metadata, recorder defaults, XML metadata,
+  and user overrides.
+"""
+function parse_filename(path::AbstractString;
+                        recorder::AbstractString = "unknown",
+                        strict::Bool = false)
+
+    # Strip directory and extension
+    base = basename(path)
+    basename_noext = splitext(base)[1]
+
+    # Look up recorder profile, or fall back to a generic profile
+
+    # Look up recorder profile. Unknown recorders do NOT use generic parsing.
+    profile = get(RECORDER_PROFILES, String(recorder), nothing)
+
+    if profile === nothing
+        @warn "Unknown recorder '$recorder'; filename metadata not parsed. " *
+              "Define a RecorderProfile or provide metadata manually in read_audio." path=path recorder=recorder
+
+        return (timestamp   = nothing,
+                timezone    = nothing,
+                lat         = missing,
+                lon         = missing,
+                site_id     = nothing,
+                recorder_id = nothing)
+    end
+
+
+    # If a custom parser exists, use it
+    if profile.parser !== nothing
+        return profile.parser(basename_noext)
+    end
+
+    # Default values if parsing does not fill them in
+    timestamp   = nothing
+    timezone    = nothing
+    site_id     = nothing
+    recorder_id = nothing
+    
+    # For now, only handle tokenized filenames for basic fields (site_id, recorder_id).
+    if profile.filename_style == :tokenized && profile.split_char !== nothing
+
+        tokens = split(basename_noext, profile.split_char)
+
+        # Small helper: safely get token by index
+        get_token(idx::Union{Int,Nothing}) =
+            isnothing(idx) || idx < 1 || idx > length(tokens) ? nothing : tokens[idx]
+
+        site_id     = get_token(profile.site_token)
+        recorder_id = get_token(profile.recorder_id_token)
+        timestamp, timezone = _parse_datetime_from_tokens(tokens, profile)
+     end   
+
+     return (timestamp   = timestamp,
+                timezone    = timezone,
+                lat         = missing,
+                lon         = missing,
+                site_id     = site_id,
+                recorder_id = recorder_id)
+end
+
+# Parse a DateTime from filename tokens using the RecorderProfile.
+#
+# Uses either:
+#   - a single datetime_token, or
+#   - a pair of date_token + time_token (joined with "_", for now).
+#
+# The actual format string is taken from `profile.datetime_format` and
+# passed directly to `Dates.DateFormat`, so each recorder can declare
+# its own layout (e.g. "yyyymmdd_HHMMSS'Z'").
+#
+# Returns (timestamp::Union{DateTime,Nothing}, timezone::Union{String,Nothing}).
+function _parse_datetime_from_tokens(tokens::Vector{<:AbstractString},
+                                     profile::RecorderProfile)
+
+    # Construct a single datetime string according to the profile.
+    dtstr::Union{Nothing,String} = nothing
+
+    if profile.datetime_token !== nothing
+        idx = profile.datetime_token
+        if 1 <= idx <= length(tokens)
+            dtstr = tokens[idx]
+        end
+
+    elseif profile.date_token !== nothing && profile.time_token !== nothing
+        di = profile.date_token
+        ti = profile.time_token
+
+        if 1 <= di <= length(tokens) && 1 <= ti <= length(tokens)
+            # For now we assume an "_" join (works for Rockhopper:
+            # "20231012_000654Z"). Other recorders may define a different join character.
+            dtstr = string(tokens[di], "_", tokens[ti])
+        end
+    end
+
+    # If we still don't have a datetime string or no format was supplied,
+    # we can't parse anything.
+    if dtstr === nothing || profile.datetime_format === nothing
+        return (nothing, nothing)
+    end
+
+    # Derive timezone from a trailing 'Z' if requested by the profile.
+    tz::Union{Nothing,String} = nothing
+    if profile.timezone_source == :suffix_Z && endswith(dtstr, "Z")
+        tz = "UTC"
+        # NOTE: we do *not* strip the 'Z' here, because the DateFormat for
+        # Rockhopper includes it as a literal: "yyyymmdd_HHMMSS'Z'".
+    end
+
+    # Try to parse using the profile's format string.
+    try
+        fmt = DateFormat(profile.datetime_format)
+        ts = DateTime(dtstr, fmt)
+        return (ts, tz)
+    catch
+        # If parsing fails, return nothing but keep any timezone we inferred.
+        return (nothing, tz)
+    end
+end
+
+
+
+
