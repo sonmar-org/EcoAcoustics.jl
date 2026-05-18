@@ -171,10 +171,9 @@ Arguments:
     avoid shared mutable state in closures.
   * `:none` — sequential processing. Useful for debugging and for `f`
     functions with internal mutable state.
-  * `:distributed` — not implemented in v1; falls back to `:threads` with a
-    warning.
-- `device::Symbol` — `:cpu` (default, only active option in v1). `:gpu` and
-  `:auto` fall back to `:cpu` with a warning.
+  * `:distributed` — throws `ArgumentError` (planned for v2).
+- `device::Symbol` — `:cpu` (default, only implemented option in v1). `:gpu`
+  and `:auto` throw `ArgumentError` (planned for v2).
 - `gap_handling::Symbol` — `:skip` (default), `:zero_fill`, or `:error`.
   Same semantics as `chunks`.
 - `on_error::Symbol`:
@@ -200,6 +199,8 @@ Constraints: `f` must be thread-safe when `parallel=:threads`. `chunk_seconds`
 Fails when:
 - Any argument validation fails (same conditions as `chunks`).
 - `on_error`, `parallel`, or `device` is not one of the listed symbols.
+- `parallel=:distributed` or `device ∈ (:gpu, :auto)` — throws `ArgumentError`;
+  these are planned for v2 but not implemented in v1.
 - Any chunk raises an exception and `on_error=:fail`.
 
 Example:
@@ -232,15 +233,13 @@ function process_chunks(source::AbstractAudioSource, f;
     device ∈ (:cpu, :gpu, :auto) || throw(ArgumentError(
         "process_chunks: device must be :cpu, :gpu, or :auto"))
 
-    if parallel == :distributed
-        @warn "process_chunks: parallel=:distributed is not implemented in v1; " *
-              "falling back to :threads"
-        parallel = :threads
-    end
-    if device != :cpu
-        @warn "process_chunks: device=$device is not implemented in v1; " *
-              "falling back to :cpu"
-    end
+    # :distributed and :gpu/:auto are recognized symbols (not typos), so the
+    # generic "must be one of" message above does not fire for them. Throw here
+    # with a targeted message so the caller knows these are planned for v2.
+    parallel == :distributed && throw(ArgumentError(
+        "process_chunks: parallel=:distributed is not implemented in v1; planned for v2"))
+    device ∈ (:gpu, :auto) && throw(ArgumentError(
+        "process_chunks: device=:$device is not implemented in v1; planned for v2"))
 
     windows = _chunk_windows(source; chunk_seconds, stride_seconds, gap_handling)
     n = length(windows)
@@ -254,50 +253,43 @@ function process_chunks(source::AbstractAudioSource, f;
     results = Vector{Any}(undef, n)
     meter   = progress ? Progress(n; desc = "Processing chunks: ") : nothing
 
-    # Merge reserved fields with whatever f returns. start_time and
-    # coverage_fraction are written second so they overwrite any same-named
-    # fields from f (documented constraint: f should not return these names).
-    function _process_one(i)
+    # cov is computed before f so it is available to both the success path and
+    # the :record error path. coverage_fraction is a pure index query — it does
+    # not call f and cannot be affected by f throwing.
+    function _process_one(i, cov)
         t0, t1 = windows[i]
         chunk  = read_audio_range(source, t0, t1; gap_handling = gr)
-        cov    = coverage_fraction(source, t0, t1)
         user   = f(chunk)
-        return merge((start_time = t0, coverage_fraction = cov), user)
+        # Reserved fields are the second argument so they win on any collision.
+        return merge(user, (start_time = t0, coverage_fraction = cov))
+    end
+
+    function _process_with_error_handling!(i)
+        t0, t1 = windows[i]
+        cov = coverage_fraction(source, t0, t1)
+        try
+            results[i] = _process_one(i, cov)
+        catch e
+            if on_error == :fail
+                rethrow()
+            elseif on_error == :skip
+                results[i] = missing
+            else  # :record
+                results[i] = (start_time        = t0,
+                              coverage_fraction  = cov,
+                              error              = sprint(showerror, e))
+            end
+        end
+        isnothing(meter) || next!(meter)
     end
 
     if parallel == :threads
         Threads.@threads for i in 1:n
-            try
-                results[i] = _process_one(i)
-            catch e
-                if on_error == :fail
-                    rethrow()
-                elseif on_error == :skip
-                    results[i] = missing
-                else  # :record
-                    results[i] = (start_time       = windows[i][1],
-                                  coverage_fraction = NaN,
-                                  error             = sprint(showerror, e))
-                end
-            end
-            isnothing(meter) || next!(meter)
+            _process_with_error_handling!(i)
         end
     else  # :none
         for i in 1:n
-            try
-                results[i] = _process_one(i)
-            catch e
-                if on_error == :fail
-                    rethrow()
-                elseif on_error == :skip
-                    results[i] = missing
-                else  # :record
-                    results[i] = (start_time       = windows[i][1],
-                                  coverage_fraction = NaN,
-                                  error             = sprint(showerror, e))
-                end
-            end
-            isnothing(meter) || next!(meter)
+            _process_with_error_handling!(i)
         end
     end
 

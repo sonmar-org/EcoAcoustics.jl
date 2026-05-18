@@ -162,6 +162,13 @@ end
                                               parallel=:bad, progress=false)
     @test_throws ArgumentError process_chunks(_C_SFS, f; chunk_seconds=1.0,
                                               device=:bad, progress=false)
+    # v1 unsupported options: valid symbols, but not yet implemented.
+    @test_throws ArgumentError process_chunks(_C_SFS, f; chunk_seconds=1.0,
+                                              parallel=:distributed, progress=false)
+    @test_throws ArgumentError process_chunks(_C_SFS, f; chunk_seconds=1.0,
+                                              device=:gpu, progress=false)
+    @test_throws ArgumentError process_chunks(_C_SFS, f; chunk_seconds=1.0,
+                                              device=:auto, progress=false)
 end
 
 # ─── process_chunks — basic schema and row count ─────────────────────────────
@@ -250,10 +257,25 @@ end
     # Error row: has a non-missing error string; val is missing.
     @test !ismissing(df[1, :error])
     @test ismissing(df[1, :val])
+    # coverage_fraction on an error row is the real value, not NaN — the
+    # source coverage is independent of whether f succeeded.
+    @test !isnan(df[1, :coverage_fraction])
+    @test df[1, :coverage_fraction] ≈ 1.0 atol = 1e-10
 
     # Success rows: val is set; error is missing.
     @test ismissing(df[2, :error])
     @test !ismissing(df[2, :val])
+end
+
+# ─── process_chunks — reserved field names are authoritative ─────────────────
+
+@testset "process_chunks: reserved field names are authoritative" begin
+    # If f returns a field named start_time, the reserved value wins —
+    # users cannot accidentally clobber the timing column.
+    f = chunk -> (start_time = DateTime(1999), val = 1.0)
+    df = process_chunks(_C_SFS, f; chunk_seconds=1.0, parallel=:none, progress=false)
+    @test df[1, :start_time] == _C_SFS_T               # reserved value, not DateTime(1999)
+    @test df[1, :val] ≈ 1.0 atol=1e-10                 # user's other field passes through
 end
 
 # ─── process_chunks — parallel=:none and :threads give same results ───────────
