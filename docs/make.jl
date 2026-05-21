@@ -16,7 +16,9 @@ makedocs(;
         "Filename parsing and metadata" => "metadata.md",
         "Audio sources and time-based access" => "sources.md",
         "Explanations" => [
-            "Calibration" => "explanations/calibration.md",
+            "Calibration"  => "explanations/calibration.md",
+            "Spectrogram"  => "explanations/spectrogram.md",
+            "Glossary"     => "explanations/glossary.md",
         ],
     ],
 )

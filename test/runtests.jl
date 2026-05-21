@@ -19,4 +19,5 @@ const TEST_DIR = joinpath(@__DIR__, "test_files")
     include("test_indexed_file_source.jl")
     include("test_chunks.jl")
     include("test_apply_calibration.jl")
+    include("test_spectrogram.jl")
 #end

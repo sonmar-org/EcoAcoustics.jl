@@ -26,6 +26,8 @@ export time_range, read_audio_range, coverage_fraction
 export build_index, load_index
 export chunks, process_chunks
 
+export SpectrogramResult, spectrogram, make_spectrogram_plan
+
 # ─── Includes ─────────────────────────────────────────────────────────────────
 
 include("audio/dsp_helpers.jl")
@@ -47,5 +49,7 @@ include("sources/SingleFileSource.jl")
 include("sources/index_builder.jl")
 include("sources/IndexedFileSource.jl")
 include("sources/chunks.jl")
+
+include("soundscape/spectrogram.jl")
 
 end
