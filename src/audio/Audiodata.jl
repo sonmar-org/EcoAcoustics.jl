@@ -174,3 +174,70 @@ nsamples(a)   # e.g. 2_880_000 for 60 s at 48 000 Hz
 ```
 """
 nsamples(a::Audiodata) = length(a.sig)
+
+"""
+    apply_calibration(a::Audiodata; plans=nothing) -> Audiodata
+
+Purpose:     Apply the calibration stored in `a.calibration` to the recording's
+             signal and return a new `Audiodata` with `is_calibrated = true`.
+             The in-place method `apply_calibration!` is used internally; this
+             wrapper handles allocation and struct reconstruction.
+
+Arguments:
+- `a::Audiodata`: The recording to calibrate. Must have `is_calibrated = false`.
+- `plans::Union{Nothing, Tuple} = nothing`: Pre-computed FFTW plan tuple
+  `(forward_plan, inverse_plan)` for the `TFCalibration` time-domain path.
+  Ignored for `ScalarCalibration` and `NoCalibration`. See `apply_calibration!`
+  for details on creating and re-using plans across chunks.
+
+Returns:     A new `Audiodata` with:
+             - `sig` containing the calibrated signal.
+             - `is_calibrated = true`.
+             - All other fields (`fs`, `starttime`, `calibration`, `metadata`)
+               copied unchanged from `a`.
+
+             Special case: if `a.calibration isa NoCalibration`, returns `a`
+             unchanged with `is_calibrated` still `false` — no transform is
+             possible without calibration data.
+
+Constraints:
+- `a.is_calibrated` must be `false`. Double-application throws.
+- `a.fs` is passed automatically to the TFCalibration method; no caller action needed.
+
+Fails when:  `a.is_calibrated` is already `true`.
+
+Example:
+```julia
+a_cal = apply_calibration(a)
+@assert a_cal.is_calibrated
+@assert !a.is_calibrated   # original unchanged
+```
+
+Do not use when: `a.calibration isa NoCalibration` and calibrated output is
+required — no transformation is possible. Check `a.calibration` first.
+"""
+function apply_calibration(a::Audiodata; plans::Union{Nothing, Tuple} = nothing)
+    a.is_calibrated && throw(ArgumentError(
+        "apply_calibration: recording is already calibrated. " *
+        "Double-application of calibration is not permitted."))
+
+    # NoCalibration: no transform is possible; return unchanged, is_calibrated stays false.
+    a.calibration isa NoCalibration && return a
+
+    out = similar(a.sig)
+    if a.calibration isa TFCalibration
+        apply_calibration!(out, a.sig, a.calibration; fs = a.fs, plans = plans)
+    else
+        apply_calibration!(out, a.sig, a.calibration)
+    end
+
+    return Audiodata(out, a.fs, a.starttime;
+                     is_calibrated = true,
+                     calibration   = a.calibration,
+                     timezone      = a.metadata.timezone,
+                     lat           = a.metadata.lat,
+                     lon           = a.metadata.lon,
+                     site_id       = a.metadata.site_id,
+                     recorder      = a.metadata.recorder,
+                     recorder_id   = a.metadata.recorder_id)
+end

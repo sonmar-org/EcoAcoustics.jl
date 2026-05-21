@@ -3,12 +3,16 @@ module EcoAcoustics
 using Dates
 using DataFrames
 using ProgressMeter
+using FFTW
+using KernelAbstractions
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 export Calibration, NoCalibration, ScalarCalibration, TFCalibration
 export Audiodata, RecordingMetadata
 export endtime, duration, nsamples
+
+export apply_calibration!, apply_calibration, apply_calibration_psd!
 
 export RecorderProfile, CalibrationProfile
 export RECORDER_PROFILES, CALIBRATION_PROFILES
@@ -24,8 +28,10 @@ export chunks, process_chunks
 
 # ─── Includes ─────────────────────────────────────────────────────────────────
 
+include("audio/dsp_helpers.jl")
 include("audio/calibration.jl")
 include("audio/Audiodata.jl")
+include("gpu/apply_calibration_kernel.jl")
 
 include("recorders/recorders.jl")
 include("recorders/rockhopper.jl")

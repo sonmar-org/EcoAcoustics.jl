@@ -165,9 +165,13 @@ function lookup_calibration(path::AbstractString,
 
     if haskey(CALIBRATION_PROFILES, key)
         cp = CALIBRATION_PROFILES[key]
-        sens_db = cp.sensitivity + cp.preamp_gain + cp.board_gain +
-                  20 * log10(1 / cp.Vadc_0pk)
-        return ScalarCalibration(Float32(sens_db))
+        if cp.tf_path !== nothing
+            freqs, tf_db = _load_tf_csv(cp.tf_path)
+            return TFCalibration(freqs, tf_db)
+        end
+        total_sens_db = cp.sensitivity + cp.preamp_gain + cp.board_gain +
+                        20 * log10(1 / cp.Vadc_0pk)
+        return ScalarCalibration(Float32(total_sens_db))
     end
 
     if strict

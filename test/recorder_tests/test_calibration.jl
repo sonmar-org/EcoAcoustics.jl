@@ -17,6 +17,6 @@ using EcoAcoustics
     @test cal isa EcoAcoustics.ScalarCalibration
 
     # From hydrophones.jl: -165 + 12 + 0 + 20*log10(1/1) = -153 dB
-    @test cal.sens_db ≈ -153f0 atol = 1e-3
+    @test cal.system_sensitivity_dB ≈ -153f0 atol = 1e-3
 end
 
