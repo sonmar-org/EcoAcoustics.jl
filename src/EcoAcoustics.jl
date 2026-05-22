@@ -1,6 +1,7 @@
 module EcoAcoustics
 
 using Dates
+using Statistics
 using DataFrames
 using ProgressMeter
 using FFTW
@@ -18,6 +19,9 @@ export RecorderProfile, CalibrationProfile
 export RECORDER_PROFILES, CALIBRATION_PROFILES
 export lookup_calibration
 
+export AbstractRecorderProfile, RockhopperProfile, get_profile
+export load_tf_calcurves
+
 export parse_filename
 export read_audio
 
@@ -27,6 +31,7 @@ export build_index, load_index
 export chunks, process_chunks
 
 export SpectrogramResult, spectrogram, make_spectrogram_plan
+export PSDResult, compute_psd, psd_units, average_psd, to_dB
 
 # ─── Includes ─────────────────────────────────────────────────────────────────
 
@@ -51,5 +56,6 @@ include("sources/IndexedFileSource.jl")
 include("sources/chunks.jl")
 
 include("soundscape/spectrogram.jl")
+include("soundscape/psd.jl")
 
 end

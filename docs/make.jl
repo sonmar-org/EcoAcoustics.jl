@@ -15,9 +15,13 @@ makedocs(;
         "Home" => "index.md",
         "Filename parsing and metadata" => "metadata.md",
         "Audio sources and time-based access" => "sources.md",
+        "Calibration" => [
+            "Rockhopper" => "calibration/rockhopper.md",
+        ],
         "Explanations" => [
             "Calibration"  => "explanations/calibration.md",
             "Spectrogram"  => "explanations/spectrogram.md",
+            "PSD"          => "explanations/psd.md",
             "Glossary"     => "explanations/glossary.md",
         ],
     ],

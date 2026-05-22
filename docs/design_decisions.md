@@ -144,3 +144,221 @@ states the reason (numerical precision in long FFTs), and gives the fix
 **Where:** Fallback method immediately after the main `spectrogram` method
 (`src/soundscape/spectrogram.jl`). Tested in `test/test_spectrogram.jl` test 8,
 which also checks that the message string is informative.
+
+---
+
+## Session: PSD layer (task 9)
+
+### DD-07 — Even-nfft constraint enforced in `spectrogram`, not `compute_psd`
+
+**Decided:** `spectrogram` asserts `iseven(nfft_actual)` immediately after
+determining the FFT length. `compute_psd` does not re-check.
+
+**Why:** The single-sided correction in `compute_psd` treats `psd_linear[end, :]`
+as the Nyquist bin and does not double it. This is only correct when nfft is even:
+for even nfft, `rfft` of a length-N signal produces N/2+1 bins — DC, N/2−1
+interior bins, and one Nyquist bin. For odd nfft, the last rfft bin is NOT Nyquist
+(there is no Nyquist for odd DFT length), so the correction would be silently
+wrong. Placing the assertion in `spectrogram` catches the error at the source with
+a message that explains the PSD dependency. Placing it in `compute_psd` would mean
+the error is only caught when the user computes a PSD — too late if the
+`SpectrogramResult` is stored or used for another purpose first.
+
+**Where:** `spectrogram` function, after `nfft_actual` is determined
+(`src/soundscape/spectrogram.jl`). Message cites DD-07 and gives the fix
+(`nfft = window_length + 1` for odd window lengths). Tested in
+`test/test_psd.jl` ("spectrogram: odd nfft rejected").
+
+---
+
+### DD-08 — Calibration applied at the PSD layer, not the spectrogram layer
+
+**Decided:** `spectrogram` never applies calibration. `compute_psd` applies it
+via `apply_calibration!(psd_linear, freqs, cal)` after normalization.
+
+**Why:** The spectrogram produces complex amplitudes in full-scale units. It has
+two downstream consumers: the PSD pipeline (needs physical calibration) and future
+click/whistle detectors (need phase information but not physical units). Applying
+calibration in the spectrogram would mix concerns and force click detection to work
+with calibrated, magnitude-only data. Keeping the spectrogram layer calibration-free
+preserves both options from the same `SpectrogramResult`.
+
+**Where:** `compute_psd(spec, cal)` in `src/soundscape/psd.jl`; documented in
+spectrogram and PSD docstrings and in `docs/src/explanations/psd.md`.
+
+---
+
+### DD-09 — Merchant 2015 Eq. (1) normalization: divide by `fs × window_energy`
+
+**Decided:** The PSD normalization is:
+
+```
+psd[k, j] = correction_k × |STFT[k, j]|² / (fs × W)
+```
+
+where `W = Σwᵢ²` (`SpectrogramResult.window_energy`).
+
+**Why:** This matches the PAMGuide / MANTA / Merchant 2015 convention. An
+alternative convention normalizes the window so that `Σwᵢ² = 1` before applying it
+to each frame, effectively absorbing the correction into the window. That convention
+is used by some signal-processing textbooks but not by the marine bioacoustics
+community. Using the Merchant form ensures that PSD values agree with MANTA to
+within numerical tolerance (< 0.1 dB) without any post-hoc scaling.
+
+**Where:** Step 3 of `compute_psd(spec, cal)` in `src/soundscape/psd.jl`.
+`window_energy` is stored unnormalized in `SpectrogramResult` (DD-02) precisely so
+it can be used here without re-computing it.
+
+---
+
+### DD-10 — Single-sided rfft correction: interior bins ×2, DC and Nyquist ×1
+
+**Decided:** After computing `abs2.(stft)`, interior frequency bins
+(`psd_linear[2:end-1, :]`) are multiplied by 2. DC (row 1) and Nyquist (last row)
+are not modified.
+
+**Why:** `rfft` drops the negative-frequency half of the DFT. For a real-valued
+signal, every interior DFT bin `k` has a negative-frequency counterpart at bin
+`N-k` with equal magnitude. The power in the positive-frequency bin therefore
+represents only half of the total power at that frequency; doubling restores it.
+DC (k=0) and Nyquist (k=N/2) are real-valued in the two-sided DFT — they are their
+own complex conjugates and appear only once. Doubling them would incorrectly inflate
+DC and Nyquist power by 3 dB. The correction is validated by three tests: the
+bin-aligned sine test checks that an interior bin gets the expected power; the
+Nyquist test checks that the Nyquist bin is NOT doubled; and the Parseval identity
+test checks that the total power sums correctly across all bins.
+
+**Where:** Step 2 of `compute_psd(spec, cal)` in `src/soundscape/psd.jl`. Only
+valid for even nfft (DD-07).
+
+---
+
+### DD-11 — `psd_linear` freshly allocated; `spec.stft` never modified
+
+**Decided:** `compute_psd` allocates a new matrix with `abs2.(spec.stft)`, then
+modifies it in-place for the correction and normalization steps. The original
+`spec.stft` is left unchanged.
+
+**Why:** A `SpectrogramResult` may be consumed by multiple downstream computations:
+PSD (task 9), future click detection, and potentially whistle detection. If
+`compute_psd` modified `spec.stft` in-place, computing the PSD would destroy phase
+information needed by click detectors. Allocating a new matrix costs one N_freqs ×
+N_frames Float64 allocation; for typical parameters (512 bins, 100 frames) this is
+~400 KB, negligible compared to the audio data.
+
+**Where:** Step 1 of `compute_psd(spec, cal)` in `src/soundscape/psd.jl`.
+
+---
+
+### DD-12 — `load_tf_calcurves` normalizes to canonical form `dB re full-scale per µPa`
+
+**Decided:** `load_tf_calcurves` reads the Cornell multi-column header CSV and
+converts `AnalogSensitivity_dB_re_1VperRefPress` to the canonical TFCalibration
+form by subtracting `20·log10(vmax_peak_V)`. The resulting `TFCalibration.format`
+is `:rockhopper_calcurves_csv`.
+
+**Why:** The Cornell calibration is in dB re 1 V/µPa at the ADC input. The package
+canonical form is dB re ADC full-scale per µPa, which is what `apply_calibration_psd!`
+expects. The conversion is `tf_dB_canonical = AnalogSensitivity_dB − 20·log10(Vmax_peak_V)`.
+For `Vmax_peak_V = 5.0 V`, the shift is `20·log10(5) ≈ 13.98 dB`. The `format` field
+in `TFCalibration` (`:rockhopper_calcurves_csv`) distinguishes this multi-column header
+format from other formats a user might supply (e.g., a bare 2-column Raven Expedition
+CSV, which is already in canonical form and must NOT have the 13.98 dB shift applied
+again). The shift amount and direction are recorded verbatim in
+`TFCalibration.conversion_notes` for auditability.
+
+**Where:** `load_tf_calcurves` in `src/recorders/rockhopper.jl`. The `format` and
+`conversion_notes` fields are defined in `TFCalibration` in
+`src/audio/calibration.jl`.
+
+---
+
+### DD-13 — `get_profile` uses `Val{recorder_id}` dispatch
+
+**Decided:** `get_profile(id::Symbol)` creates a `Val{id}` value and dispatches to
+`get_profile(::Val{:recorder_name})`. Adding a new recorder profile requires only
+one new method in the recorder's source file.
+
+**Why:** A dictionary-based registry (`PROFILE_REGISTRY[id]`) is the obvious
+alternative but requires every recorder file to register itself at module load
+time via a global mutation. `Val` dispatch achieves the same extensibility without
+a shared mutable registry. The symbol-to-Val bridge in `recorders.jl` is the only
+central code; each recorder file adds its own `get_profile(::Val{:name})` method.
+The fallback method throws `ArgumentError` with the recorder name, making the
+error message specific.
+
+**Where:** `get_profile(id::Symbol)` bridge and `get_profile(::Val{T}) where T`
+fallback in `src/recorders/recorders.jl`; `get_profile(::Val{:rockhopper})` method
+in `src/recorders/rockhopper.jl`.
+
+---
+
+### DD-14 — `_psd_calibration` three-step cascade
+
+**Decided:** When `compute_psd(audio::Audiodata)` is called, calibration is
+resolved by `_psd_calibration(audio)` in priority order:
+1. `audio.is_calibrated == true` → signal already in physical units; return
+   `NoCalibration()` (no further correction at the PSD layer).
+2. `audio.calibration isa !NoCalibration` → an explicit calibration was attached
+   at I/O time (e.g. `ScalarCalibration` for SM3M); use it.
+3. Try `get_profile(Symbol(recorder)).tf`. If the profile carries a `TFCalibration`
+   in a field named `:tf` (checked via `hasproperty`), return it. Catch
+   `ArgumentError` from unregistered recorders without re-throwing.
+4. Nothing found → `@warn` and return `NoCalibration()`.
+
+**Why:** This cascade makes Rockhopper recordings "just work" without the user
+having to supply calibration explicitly: `compute_psd(audio; window_seconds=1.0)`
+auto-resolves to the shipped TF calibration. Step 1 prevents double-calibration
+when the user has already called `apply_calibration!` in the time domain. Step 2
+handles SM3M and LS1X (scalar calibration attached by `read_audio`). Step 3 handles
+recorders with typed profiles (currently only Rockhopper). `hasproperty` is used
+rather than requiring `AbstractRecorderProfile` to define a `:tf` field, so adding
+a recorder without a TF (e.g., one that only has a scalar sensitivity) doesn't
+require interface changes.
+
+**Where:** `_psd_calibration(audio::Audiodata)` in `src/soundscape/psd.jl`.
+
+---
+
+### DD-15 — `psd_units` dispatches on `is_calibrated::Bool`, not on `cal` type
+
+**Decided:** `psd_units(p::PSDResult)` returns `:µPa²_per_Hz` when
+`p.is_calibrated` is `true`, and `:fullscale²_per_Hz` when `false`. There are no
+separate `psd_units(::NoCalibration)` etc. overloads.
+
+**Why:** If `psd_units` dispatched on `p.cal`, a signal pre-calibrated in the time
+domain (via `apply_calibration!`) and then processed with `compute_psd` (which
+receives `cal = NoCalibration()` from `_psd_calibration` step 1) would incorrectly
+report `:fullscale²_per_Hz` even though the PSD values are physically in µPa²/Hz.
+Dispatching on `is_calibrated::Bool` is semantically correct for all cases where
+`PSDResult.is_calibrated` accurately reflects the physical state.
+
+**Implementation note:** The primitive sets `is_calibrated = !(cal isa NoCalibration)`,
+which is correct for direct use of the primitive. The `Audiodata` wrapper corrects
+the flag after the fact: `is_cal = audio.is_calibrated || result.is_calibrated`.
+When both are false the wrapper returns the primitive's result directly (no
+allocation); when `audio.is_calibrated` is true and `resolved_cal` is
+`NoCalibration`, the wrapper reconstructs the `PSDResult` with `is_calibrated =
+true`. This ensures `psd_units` returns `:µPa²_per_Hz` for pre-calibrated signals.
+
+**Where:** `psd_units(p::PSDResult)` in `src/soundscape/psd.jl`. Tested in
+`test/test_psd.jl` ("psd_units: dispatch on is_calibrated flag").
+
+---
+
+### DD-16 — `average_psd` averages in linear power, not in dB
+
+**Decided:** `average_psd(result::PSDResult)` computes `mean(result.psd_linear;
+dims=2)` in linear power (µPa²/Hz or full-scale²/Hz), then collapses the result to
+a `Vector{Float64}`. Conversion to dB is done afterward by the caller via `to_dB`.
+
+**Why:** Averaging in dB is NOT equivalent to averaging in linear power:
+`mean(10·log10.(x)) ≠ 10·log10(mean(x))` except when all values are equal. For
+bioacoustic data with high temporal variation (ship noise, biological choruses),
+dB averaging underestimates the mean power — sometimes by several dB. The Merchant
+2015 LTSA convention and all PAMGuide-family tools (MANTA, Triton) average in
+linear power. EcoAcoustics.jl follows this convention to ensure numerical agreement
+with reference tools.
+
+**Where:** `average_psd(result::PSDResult)` in `src/soundscape/psd.jl`. Convention
+explicitly stated in the function docstring and `docs/src/explanations/psd.md`.

@@ -180,6 +180,12 @@ function spectrogram(signal::AbstractVector{Float64};
     @assert nfft_actual >= window_length begin
         "spectrogram: nfft=$nfft_actual must be ≥ window_length=$window_length"
     end
+    @assert iseven(nfft_actual) begin
+        "spectrogram: nfft=$nfft_actual must be even (DD-07). The PSD layer treats " *
+        "the last rfft bin as the Nyquist bin, which is only true for even nfft. " *
+        "If window_length is odd and no nfft is specified, pass an explicit even nfft " *
+        "(e.g. nfft = window_length + 1)."
+    end
 
     @assert 0 <= overlap_fraction < 1 begin
         "spectrogram: overlap_fraction=$overlap_fraction must be in [0, 1)"

@@ -27,6 +27,12 @@ function _write_test_tf_csv(rows::Vector{Tuple{Float64,Float64}})
     return path
 end
 
+# Helper: construct a minimal TFCalibration with placeholder provenance fields.
+# Used throughout these tests to avoid repeating the source/format/notes boilerplate.
+function _test_tf(freqs::Vector{Float64}, tf_dB::Vector{Float64})
+    TFCalibration(freqs, tf_dB, "test", :test, "test calibration — no gain conversion")
+end
+
 # ─── _load_tf_csv unit tests ──────────────────────────────────────────────────
 
 @testset "_load_tf_csv" begin
@@ -152,8 +158,8 @@ end
 # error (~1e-13 relative). No steady-state window or transient trimming needed.
 
 @testset "TFCalibration time domain — flat 0 dB (identity)" begin
-    # tf_db = 0 → tf_mag = 10^(0/20) = 1 → output == input (FFT round-trip precision)
-    cal    = TFCalibration([1.0f0, 10000.0f0], [0.0f0, 0.0f0])
+    # tf_dB = 0 → tf_mag = 10^(0/20) = 1 → output == input (FFT round-trip precision)
+    cal    = _test_tf([1.0, 10000.0], [0.0, 0.0])
     signal = randn(2048)
     out    = similar(signal)
     apply_calibration!(out, signal, cal; fs = 10000.0)
@@ -161,8 +167,8 @@ end
 end
 
 @testset "TFCalibration time domain — flat -20 dB (×10 scale)" begin
-    # tf_db = -20 → -tf_db/20 = 1 → tf_mag = 10 → output == 10 × input
-    cal    = TFCalibration([1.0f0, 10000.0f0], [-20.0f0, -20.0f0])
+    # tf_dB = -20 → -tf_dB/20 = 1 → tf_mag = 10 → output == 10 × input
+    cal    = _test_tf([1.0, 10000.0], [-20.0, -20.0])
     signal = randn(2048)
     out    = similar(signal)
     apply_calibration!(out, signal, cal; fs = 10000.0)
@@ -172,7 +178,7 @@ end
 @testset "TFCalibration time domain — short signal (100 samples)" begin
     # Flat TF is exact even for short signals: scalar multiplication is circular-
     # boundary-free. Verifies length is preserved and no out-of-bounds access.
-    cal    = TFCalibration([1.0f0, 10000.0f0], [-20.0f0, -20.0f0])
+    cal    = _test_tf([1.0, 10000.0], [-20.0, -20.0])
     signal = randn(100)
     out    = similar(signal)
     apply_calibration!(out, signal, cal; fs = 10000.0)
@@ -182,7 +188,7 @@ end
 
 @testset "TFCalibration time domain — pre-computed plans" begin
     # Pre-computed plans must give the same result as the no-plans path.
-    cal    = TFCalibration([1.0f0, 10000.0f0], [-20.0f0, -20.0f0])
+    cal    = _test_tf([1.0, 10000.0], [-20.0, -20.0])
     signal = randn(2048)
     buf    = zeros(2048)
     fwd    = FFTW.plan_rfft(buf)
@@ -197,7 +203,7 @@ end
 # ─── TFCalibration — frequency domain (PSD path) ─────────────────────────────
 
 @testset "TFCalibration frequency domain (apply_calibration_psd!)" begin
-    cal   = TFCalibration([1.0f0, 10000.0f0], [-100.0f0, -100.0f0])  # flat -100 dB
+    cal   = _test_tf([1.0, 10000.0], [-100.0, -100.0])  # flat -100 dB
     freqs = [0.0, 500.0, 1000.0, 5000.0]
     psd   = [50.0, 60.0, 70.0, 80.0]           # arbitrary dBFS values
     out   = copy(psd)
@@ -211,19 +217,15 @@ end
     @test_throws AssertionError apply_calibration_psd!(out, freqs[1:3], cal)
 end
 
-# ─── lookup_calibration returns TFCalibration for Rockhopper ─────────────────
+# ─── lookup_calibration returns TFCalibration for Rockhopper (legacy path) ───
+# NOTE: In deliverable 2, Rockhopper moves to get_profile(:rockhopper). Until
+# then, the CALIBRATION_PROFILES entry with tf_path still routes through here.
 
-@testset "lookup_calibration Rockhopper → TFCalibration" begin
+@testset "lookup_calibration Rockhopper — legacy path removed (now uses get_profile)" begin
+    # Rockhopper was removed from CALIBRATION_PROFILES in Deliverable 2.
+    # lookup_calibration now returns NoCalibration() with a warning.
+    # Use get_profile(:rockhopper).tf for Rockhopper calibration.
     cal = EcoAcoustics.lookup_calibration("dummy.flac", "rockhopper", _cal_meta;
                                           strict = false)
-
-    @test cal isa TFCalibration
-    # Negation check: CSV stores positive values (up to ~72 dB); after negation
-    # the dominant portion should be large-negative. A few high-frequency bins
-    # in the Rockhopper TF CSV are slightly negative (near the 17 kHz notch),
-    # so after negation those become small positives — `all <= 0` would be wrong.
-    @test minimum(cal.tf_db) < -60.0f0    # CSV had large positive → now large negative
-    @test count(cal.tf_db .> 0) < length(cal.tf_db) ÷ 4   # <25% positive; actual ~19% (resonance band)
-    @test cal.freqs[1] ≈ 1.0f0            # CSV starts at 1 Hz
-    @test length(cal.freqs) == length(cal.tf_db)
+    @test cal isa NoCalibration
 end

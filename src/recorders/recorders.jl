@@ -166,8 +166,20 @@ function lookup_calibration(path::AbstractString,
     if haskey(CALIBRATION_PROFILES, key)
         cp = CALIBRATION_PROFILES[key]
         if cp.tf_path !== nothing
-            freqs, tf_db = _load_tf_csv(cp.tf_path)
-            return TFCalibration(freqs, tf_db)
+            # Legacy path for custom recorders registered with a two-column TF CSV.
+            # Rockhopper no longer uses this path — it uses get_profile(:rockhopper).
+            # _load_tf_csv reads a headerless two-column CSV and negates the second
+            # column; the result is in dB re full-scale per µPa (negative convention).
+            freqs_f32, tf_db_f32 = _load_tf_csv(cp.tf_path)
+            return TFCalibration(
+                Float64.(freqs_f32),
+                Float64.(tf_db_f32),
+                cp.tf_path,
+                :legacy_two_column_csv,
+                "Loaded via _load_tf_csv (headerless two-column CSV; second column " *
+                "negated on read from positive manufacturer convention to negative " *
+                "package convention; no gain conversion applied)."
+            )
         end
         total_sens_db = cp.sensitivity + cp.preamp_gain + cp.board_gain +
                         20 * log10(1 / cp.Vadc_0pk)
@@ -184,4 +196,59 @@ function lookup_calibration(path::AbstractString,
           "Metric computations will be in raw ADC units, not physical units." recorder=recorder
 
     return NoCalibration()
+end
+
+# ─── Recorder profile dispatch ────────────────────────────────────────────────
+
+"""
+    AbstractRecorderProfile
+
+Abstract base type for recorder-specific calibration profiles. Each supported
+recorder defines a concrete subtype in `src/recorders/<name>.jl`.
+
+Use `get_profile(:recorder_id)` to retrieve the singleton profile for a recorder.
+"""
+abstract type AbstractRecorderProfile end
+
+"""
+    get_profile(id::Symbol) -> AbstractRecorderProfile
+
+Purpose:     Return the singleton calibration profile for the recorder identified
+             by `id`. The profile carries the shipped `TFCalibration` and any
+             recorder-level constants. Called automatically by `compute_psd` when
+             no explicit `cal` argument is supplied.
+
+Arguments:
+- `id::Symbol`: Recorder family identifier (e.g. `:rockhopper`). Resolved via
+  `Val{id}` dispatch — each supported recorder registers a
+  `get_profile(::Val{:<name>})` method in its own source file.
+
+Returns:     The concrete `AbstractRecorderProfile` subtype for that recorder.
+             Always the same singleton object; do not mutate.
+
+Constraints: Calibration is pinned to the package version (DD-13). To use a
+             different calibration, construct a `TFCalibration` via
+             `load_tf_calcurves` and pass it explicitly as `cal=` to `compute_psd`.
+
+Fails when:  `id` is not recognised. Raises `ArgumentError` with the unknown
+             symbol and a pointer to how to add a new recorder.
+
+Example:
+```julia
+tf = get_profile(:rockhopper).tf    # TFCalibration for Rockhopper
+```
+"""
+get_profile(id::Symbol) = get_profile(Val(id))
+
+# Fallback: catches any Val{S} for which no recorder has registered a method.
+# A raw MethodError on Val{:unknown} would be confusing; this replaces it with
+# a message that names the symbol and explains what to do.
+function get_profile(::Val{S}) where {S}
+    throw(ArgumentError(
+        "No recorder profile registered for recorder_id=:$(S). " *
+        "To add support, create src/recorders/<name>.jl with a concrete " *
+        "AbstractRecorderProfile subtype, a shipped calibration CSV under " *
+        "src/recorders/calibration_data/, and a get_profile(::Val{:<name>}) method. " *
+        "See DD-13 in docs/design_decisions.md."
+    ))
 end
