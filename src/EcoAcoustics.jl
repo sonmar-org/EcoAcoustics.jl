@@ -18,6 +18,7 @@ export apply_calibration!, apply_calibration
 export RecorderProfile, CalibrationProfile
 export RECORDER_PROFILES, CALIBRATION_PROFILES
 export lookup_calibration
+export NO_CALIBRATION_WARN_PREFIX
 
 export AbstractRecorderProfile, RockhopperProfile, get_profile
 export load_tf_calcurves

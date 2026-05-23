@@ -128,6 +128,11 @@ separately via [`TFCalibration`](@ref) and is not stored here.
 """
 const CALIBRATION_PROFILES = Dict{String,CalibrationProfile}()
 
+# Authoritative prefix for the "no calibration" warning emitted by
+# lookup_calibration. index_builder.jl filters on this constant so that
+# editing the warning text here does not silently break the filter.
+const NO_CALIBRATION_WARN_PREFIX = "No calibration entry"
+
 """
     lookup_calibration(path, recorder, meta; strict=false)
 
@@ -193,7 +198,7 @@ function lookup_calibration(path::AbstractString,
               "or pass strict=false to proceed with NoCalibration().")
     end
 
-    @warn "No calibration entry for recorder; returning NoCalibration(). " *
+    @warn "$NO_CALIBRATION_WARN_PREFIX for recorder; returning NoCalibration(). " *
           "Metric computations will be in raw ADC units, not physical units." recorder=recorder
 
     return NoCalibration()

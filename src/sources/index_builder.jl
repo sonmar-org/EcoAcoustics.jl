@@ -23,7 +23,7 @@ Logging.shouldlog(l::_NoCalibrationWarnLogger, level, mod, group, id) =
 function Logging.handle_message(l::_NoCalibrationWarnLogger,
                                 level, msg, mod, group, id, file, line; kwargs...)
     level == Logging.Warn &&
-        startswith(string(msg), "No calibration entry") && return
+        startswith(string(msg), NO_CALIBRATION_WARN_PREFIX) && return
     Logging.handle_message(l.inner, level, msg, mod, group, id, file, line; kwargs...)
 end
 
