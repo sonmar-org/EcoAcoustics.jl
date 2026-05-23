@@ -21,15 +21,28 @@ end
 Base.eltype(::Type{ChunksIterator}) = Audiodata
 Base.IteratorSize(::Type{ChunksIterator}) = Base.SizeUnknown()
 
+# Purpose:     Return true if the window [t, t_stop] should be skipped under the
+#              given gap_handling mode. This is the authoritative skip decision
+#              shared by ChunksIterator.iterate and _chunk_windows; any change to
+#              the skip policy (e.g. threshold, mode semantics) must happen here,
+#              not in the callers.
+# Constraints: Pure function — no side effects, no logging. Logging belongs to
+#              the caller.
+# Fails when:  Never.
+function _should_skip_window(source::AbstractAudioSource,
+                              t::DateTime,
+                              t_stop::DateTime,
+                              gap_handling::Symbol) :: Bool
+    gap_handling == :skip || return false
+    return coverage_fraction(source, t, t_stop) == 0.0
+end
+
 function Base.iterate(iter::ChunksIterator, t = iter.t_start)
-    # In :skip mode, advance past any window whose requested span has zero
-    # overlap with the source. Windows with partial coverage are still emitted —
-    # their coverage_fraction in the signal reflects the fill.
-    if iter.gap_handling == :skip
-        while t < iter.t_end &&
-              coverage_fraction(iter.source, t, t + iter.chunk_dur) == 0.0
-            t += iter.stride_dur
-        end
+    # Advance past zero-coverage windows in :skip mode. Windows with partial
+    # coverage are still emitted — their coverage_fraction reflects the fill.
+    while t < iter.t_end &&
+          _should_skip_window(iter.source, t, t + iter.chunk_dur, iter.gap_handling)
+        t += iter.stride_dur
     end
 
     t >= iter.t_end && return nothing
@@ -119,8 +132,9 @@ end
 #              emit into a pre-allocated Vector, applying the same gap-filtering
 #              logic. Used by `process_chunks` to build an indexable work list
 #              for parallel dispatch via `Threads.@threads`.
-# Constraints: Millisecond rounding and :skip filtering are identical to
-#              `ChunksIterator.iterate` — the two must remain in sync.
+# Constraints: Millisecond rounding is identical to `ChunksIterator.iterate`.
+#              Gap filtering delegates to `_should_skip_window` — the same
+#              predicate as the iterator, guaranteeing identical skip semantics.
 # Fails when:  Same conditions as `chunks`.
 function _chunk_windows(source::AbstractAudioSource;
                         chunk_seconds::Real,
@@ -134,7 +148,7 @@ function _chunk_windows(source::AbstractAudioSource;
     t = t_start
     while t < t_end
         t_stop = t + chunk_dur
-        if gap_handling != :skip || coverage_fraction(source, t, t_stop) > 0.0
+        if !_should_skip_window(source, t, t_stop, gap_handling)
             push!(windows, (t, t_stop))
         end
         t += stride_dur

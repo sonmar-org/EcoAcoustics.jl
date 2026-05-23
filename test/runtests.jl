@@ -5,7 +5,7 @@ using Test
 
 const TEST_DIR = joinpath(@__DIR__, "test_files")
 
-#@testset "EcoAcoustics.jl" begin
+@testset "EcoAcoustics.jl" begin
 
     include("test_audiodata.jl")
     include("test_normalize_audio.jl")
@@ -24,4 +24,4 @@ const TEST_DIR = joinpath(@__DIR__, "test_files")
     include("test_spectrogram.jl")
     include("test_psd.jl")
     include("test_psd_manta_validation.jl")
-#end
+end

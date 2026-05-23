@@ -486,6 +486,85 @@ end
     @test result.cal isa NoCalibration
 end
 
+# ─── compute_psd: calibration cascade priority ────────────────────────────────
+#
+# _psd_calibration resolves calibration in priority order (DD-14). Each subtest
+# triggers exactly one exit and asserts the distinguishing signal for that branch.
+# Keeping all four exits together makes a future reordering immediately visible
+# as a test failure rather than a silent change in output units.
+
+@testset "compute_psd: calibration cascade priority" begin
+    N  = 1024
+    fs = 10000.0
+
+    @testset "cascade step 1: pre-calibrated signal → NoCalibration" begin
+        # audio.is_calibrated == true fires before any other check.
+        # _psd_calibration returns NoCalibration() (no further PSD-layer cal),
+        # but the Audiodata wrapper propagates audio.is_calibrated → is_cal = true.
+        # Steps 2 and 3 are not reached; pre-condition assertions confirm it.
+        cal          = ScalarCalibration(-100.0f0)
+        audio        = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                                 calibration = cal)
+        audio_precal = apply_calibration(audio)
+        @test audio_precal.is_calibrated            # step 1 trigger: pre-condition
+
+        result = compute_psd(audio_precal; window_seconds = N / fs, window = :rectangular)
+        @test result.cal isa NoCalibration          # cascade returned NoCalibration at PSD layer
+        @test result.is_calibrated                  # propagated from audio.is_calibrated
+        @test psd_units(result) == :µPa²_per_Hz    # unit reflects physical state, not cal type
+    end
+
+    @testset "cascade step 2: explicit calibration attachment → use as-is" begin
+        # audio.calibration isa !NoCalibration fires before get_profile lookup (step 3).
+        # Identity check (===) proves result.cal is the exact object from audio.calibration,
+        # not a TFCalibration from a profile.
+        explicit = ScalarCalibration(-153.0f0)
+        audio    = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                             calibration = explicit)
+        @test !audio.is_calibrated                  # step 1 not triggered
+        @test !(audio.calibration isa NoCalibration) # step 2 trigger: pre-condition
+
+        result = compute_psd(audio; window_seconds = N / fs, window = :rectangular)
+        @test result.cal === explicit               # same object: step 2 returned audio.calibration
+        @test result.is_calibrated
+    end
+
+    @testset "cascade step 3: recognized recorder → shipped TF" begin
+        # audio.calibration is NoCalibration and is_calibrated is false, so the
+        # cascade reaches get_profile(:rockhopper) and returns its TFCalibration.
+        # Steps 1 and 2 are not reached; pre-condition assertions confirm it.
+        N_rh  = 4800
+        fs_rh = 48000.0
+        audio = Audiodata(randn(Float64, N_rh), Float32(fs_rh), DateTime(2023, 1, 1);
+                          recorder = "rockhopper")
+        @test !audio.is_calibrated                  # step 1 not triggered
+        @test audio.calibration isa NoCalibration   # step 2 not triggered; step 3 trigger
+
+        result = compute_psd(audio; window_seconds = N_rh / fs_rh, window = :hann)
+        @test result.cal isa TFCalibration          # cascade resolved via get_profile
+        @test result.is_calibrated
+        @test psd_units(result) == :µPa²_per_Hz
+    end
+
+    @testset "cascade step 4: unknown recorder → warn + NoCalibration" begin
+        # All three earlier steps fail: is_calibrated is false, calibration is
+        # NoCalibration, and the recorder has no registered profile. The cascade
+        # emits @warn and returns NoCalibration — the silent-failure exit.
+        # @test_logs verifies the warning fires; without it, a future change that
+        # silently drops the warning would go undetected.
+        audio = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                          recorder = "unknown_recorder_xyz")
+        @test !audio.is_calibrated                  # step 1 not triggered
+        @test audio.calibration isa NoCalibration   # steps 2 and 3 not triggered
+
+        result = @test_logs (:warn, r"no calibration found") compute_psd(
+            audio; window_seconds = N / fs, window = :rectangular)
+        @test result.cal isa NoCalibration
+        @test !result.is_calibrated                 # distinguishes from step 1
+        @test psd_units(result) == :fullscale²_per_Hz
+    end
+end
+
 # ─── compute_psd(AbstractAudioSource, start, stop) ────────────────────────────
 
 @testset "compute_psd(AbstractAudioSource): delegates to Audiodata wrapper" begin
@@ -533,12 +612,10 @@ end
 end
 
 @testset "compute_psd(src): keyword forwarding — window_seconds and nfft" begin
-    # window_seconds = 2.0 at 48 kHz → window_length = nfft = 96 000.
-    # With 50% overlap (hop = 48 000) and ~480 001 samples:
-    #   n_frames = floor((480001 − 96000) / 48000) + 1 = 9
-    wav_path = joinpath(@__DIR__, "test_files", "test_real.wav")
-    src      = SingleFileSource(wav_path; recorder = "unknown")
-    fs       = 48000.0
+    wav_path        = joinpath(@__DIR__, "test_files", "test_real.wav")
+    src             = SingleFileSource(wav_path; recorder = "unknown")
+    fs              = 48000.0
+    t_start, t_stop = time_range(src)
 
     result = @test_logs (:warn, r"no calibration found") compute_psd(
         src; window_seconds = 2.0, overlap_fraction = 0.5, window = :hann)
@@ -546,7 +623,16 @@ end
     expected_nfft = round(Int, 2.0 * fs)
     @test result.nfft == expected_nfft
     @test size(result.psd_linear, 1) == expected_nfft ÷ 2 + 1
-    @test size(result.psd_linear, 2) == 9
+
+    # Read the audio to get the exact sample count so expected_frames mirrors
+    # spectrogram()'s formula without hardcoding a value tied to this file's duration.
+    # gap_handling=:zero_fill matches the default used by compute_psd(src; ...).
+    n               = nsamples(read_audio_range(src, t_start, t_stop;
+                                                gap_handling = :zero_fill))
+    window_length   = round(Int, 2.0 * fs)
+    hop             = max(1, round(Int, (1.0 - 0.5) * window_length))
+    expected_frames = div(n - window_length, hop) + 1
+    @test size(result.psd_linear, 2) == expected_frames
 end
 
 @testset "compute_psd(src): calibration kwarg forwarded, not dropped" begin
