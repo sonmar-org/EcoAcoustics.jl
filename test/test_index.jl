@@ -1,6 +1,7 @@
 using Test
 using EcoAcoustics
 using Dates
+using Logging
 import Arrow
 import WAV
 
@@ -107,11 +108,15 @@ end
 @testset "build_index: unreadable file is skipped" begin
     # A file with a .wav extension but garbage content cannot be parsed.
     # build_index logs a warning and continues; only the valid file is indexed.
+    # Two warnings fire in order: no-timestamp from parse_filename on corrupt.wav,
+    # then skipping from build_index's catch block.
     mktempdir() do dir
         _write_test_wav(joinpath(dir, "T1-C__0__20230101_120000.wav"))
         write(joinpath(dir, "corrupt.wav"), "not a wav file")
-        tbl = EcoAcoustics.build_index(dir; recorder = "sm3m")
-        @test length(tbl.start_time) == 1
+        @test_logs (:warn, r"no timestamp") (:warn, r"skipping unreadable") min_level=Logging.Warn begin
+            tbl = EcoAcoustics.build_index(dir; recorder = "sm3m")
+            @test length(tbl.start_time) == 1
+        end
     end
 end
 
@@ -139,10 +144,13 @@ end
         write(path, bytes)
 
         # build_index should recover via _wavread_corrected and record the
-        # actual sample count, not the inflated header claim.
-        tbl = EcoAcoustics.build_index(dir; recorder = "sm3m")
-        @test length(tbl.start_time) == 1
-        @test tbl.nsamples[1] == 1000
+        # actual sample count, not the inflated header claim. The truncated-file
+        # correction emits a warning, which is the expected behavior under test.
+        @test_logs (:warn, r"WAV header corrected") min_level=Logging.Warn begin
+            tbl = EcoAcoustics.build_index(dir; recorder = "sm3m")
+            @test length(tbl.start_time) == 1
+            @test tbl.nsamples[1] == 1000
+        end
     end
 end
 

@@ -207,8 +207,9 @@ end
 @testset "lookup_calibration Rockhopper — legacy path removed (now uses get_profile)" begin
     # Rockhopper was removed from CALIBRATION_PROFILES in Deliverable 2.
     # lookup_calibration now returns NoCalibration() with a warning.
-    # Use get_profile(:rockhopper).tf for Rockhopper calibration.
-    cal = EcoAcoustics.lookup_calibration("dummy.flac", "rockhopper", _cal_meta;
-                                          strict = false)
+    # The warning IS the expected behavior: it signals that the caller should
+    # use get_profile(:rockhopper).tf instead of the lookup_calibration path.
+    cal = @test_logs (:warn, r"No calibration entry") EcoAcoustics.lookup_calibration(
+        "dummy.flac", "rockhopper", _cal_meta; strict = false)
     @test cal isa NoCalibration
 end

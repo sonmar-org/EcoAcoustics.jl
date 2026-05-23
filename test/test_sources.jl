@@ -1,18 +1,19 @@
 using Test
 using EcoAcoustics
 using Dates
+using Logging
 
 const WAV_FILE = joinpath(TEST_DIR, "test_real.wav")
 
 @testset "SingleFileSource construction" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     @test src.path == WAV_FILE
     @test src.audio isa EcoAcoustics.Audiodata
     @test EcoAcoustics.nsamples(src.audio) > 0
 end
 
 @testset "time_range" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     @test t_start isa DateTime
     @test t_stop  isa DateTime
@@ -25,7 +26,7 @@ end
 end
 
 @testset "coverage_fraction" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     dur = t_stop - t_start
 
@@ -46,7 +47,7 @@ end
 end
 
 @testset "read_audio_range: full file" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     chunk = EcoAcoustics.read_audio_range(src, t_start, t_stop)
 
@@ -59,7 +60,7 @@ end
 
 @testset "read_audio_range: partial overlap — head" begin
     # Window starts one file-duration before the file; only the second half overlaps.
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     dur   = t_stop - t_start
     n_file = EcoAcoustics.nsamples(src.audio)
@@ -75,7 +76,7 @@ end
 
 @testset "read_audio_range: partial overlap — tail" begin
     # Window ends one file-duration after the file; only the first half overlaps.
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     dur    = t_stop - t_start
     n_file = EcoAcoustics.nsamples(src.audio)
@@ -90,7 +91,7 @@ end
 end
 
 @testset "read_audio_range: no overlap" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     dur = t_stop - t_start
 
@@ -104,7 +105,7 @@ end
 end
 
 @testset "read_audio_range: gap_handling=:error" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE)
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(WAV_FILE)
     t_start, t_stop = EcoAcoustics.time_range(src)
     dur = t_stop - t_start
 
@@ -122,8 +123,8 @@ end
 end
 
 @testset "read_audio_range: metadata propagation" begin
-    src = EcoAcoustics.SingleFileSource(WAV_FILE; recorder="sm3m",
-                                        site_id="T1-C")
+    src = @test_logs min_level=Logging.Error EcoAcoustics.SingleFileSource(
+        WAV_FILE; recorder="sm3m", site_id="T1-C")
     t_start, t_stop = EcoAcoustics.time_range(src)
     chunk = EcoAcoustics.read_audio_range(src, t_start, t_stop)
 

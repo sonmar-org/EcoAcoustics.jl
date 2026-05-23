@@ -1,6 +1,7 @@
 using Test
 using Dates
 using EcoAcoustics
+using Logging
 using Statistics
 
 # ─── MANTA / PAMGuide cross-validation ───────────────────────────────────────
@@ -83,8 +84,11 @@ end
 
 # ─── Load clips and extract three one-minute windows ─────────────────────────
 
-clip1 = read_audio(_CLIP1_PATH; recorder = "rockhopper")
-clip2 = read_audio(_CLIP2_PATH; recorder = "rockhopper")
+# These clips use custom-renamed filenames without Rockhopper timestamp format,
+# and Rockhopper has no entry in CALIBRATION_PROFILES (legacy path removed).
+# Both warnings are incidental to the MANTA accuracy validation being performed here.
+clip1 = @test_logs min_level=Logging.Error read_audio(_CLIP1_PATH; recorder = "rockhopper")
+clip2 = @test_logs min_level=Logging.Error read_audio(_CLIP2_PATH; recorder = "rockhopper")
 
 fs   = clip1.fs                       # 197368.0f0
 n60  = round(Int, Float64(fs) * 60)   # 11_842_080 — exactly representable

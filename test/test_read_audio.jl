@@ -1,12 +1,13 @@
 using Test
 using EcoAcoustics
 using Dates
+using Logging
 using WAV
 
 @testset "read_audio basic WAV (test_real.wav)" begin
     audio_file = joinpath(TEST_DIR, "test_real.wav")
 
-    audio = EcoAcoustics.read_audio(audio_file)
+    audio = @test_logs min_level=Logging.Error EcoAcoustics.read_audio(audio_file)
  
     # Input File     : 'test_real.wav'
     # Channels       : 1
@@ -31,7 +32,7 @@ end
 @testset "read_audio basic FLAC (test_real.flac)" begin
     audio_file = joinpath(TEST_DIR, "test_real.flac")
 
-    audio = EcoAcoustics.read_audio(audio_file)
+    audio = @test_logs min_level=Logging.Error EcoAcoustics.read_audio(audio_file)
  
     # Input File     : 'test_real.flac'
     # Channels       : 1
@@ -85,8 +86,8 @@ end
     wav_file  = joinpath(TEST_DIR, "test_real.wav")
     flac_file = joinpath(TEST_DIR, "test_real.flac")
 
-    aud_wav  = EcoAcoustics.read_audio(wav_file)
-    aud_flac = EcoAcoustics.read_audio(flac_file)
+    aud_wav  = @test_logs min_level=Logging.Error EcoAcoustics.read_audio(wav_file)
+    aud_flac = @test_logs min_level=Logging.Error EcoAcoustics.read_audio(flac_file)
 
     # Basic consistency
     @test aud_wav.fs == aud_flac.fs

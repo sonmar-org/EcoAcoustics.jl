@@ -1,5 +1,6 @@
 using Test
 using EcoAcoustics
+using Logging
 using Statistics
 
 # All expected values are derived analytically from first principles.
@@ -396,7 +397,11 @@ end
     signal = randn(Float64, N)
     audio  = Audiodata(signal, Float32(fs), DateTime(2023, 1, 1))
 
-    result_auto = compute_psd(audio; window_seconds = N / fs, window = :rectangular)
+    # audio.recorder defaults to "unknown" with no calibration profile; the
+    # warning is incidental — this test exercises PSD value correctness, not the
+    # calibration-missing warning path (that is tested in the cascade testsets below).
+    result_auto = @test_logs min_level=Logging.Error compute_psd(
+        audio; window_seconds = N / fs, window = :rectangular)
 
     spec          = spectrogram(signal; fs = Float64(fs), window_seconds = N / fs,
                                 window = :rectangular)
@@ -572,7 +577,9 @@ end
     # Verify that compute_psd on the source produces the same result as
     # reading the audio manually and calling the Audiodata wrapper.
     wav_path = joinpath(@__DIR__, "test_files", "test_real.wav")
-    src      = SingleFileSource(wav_path; recorder = "unknown")
+    # SingleFileSource calls read_audio once at construction; suppress the
+    # incidental unknown-recorder / no-calibration / no-timestamp warnings.
+    src      = @test_logs min_level=Logging.Error SingleFileSource(wav_path; recorder = "unknown")
     t_start, t_stop = time_range(src)
     # Trim to 1 second to keep the test fast.
     t_end = t_start + Dates.Millisecond(1000)
@@ -598,7 +605,7 @@ end
     # Full-source form must produce identical output to the range form over
     # the same window (time_range(src) start→stop).
     wav_path = joinpath(@__DIR__, "test_files", "test_real.wav")
-    src      = SingleFileSource(wav_path; recorder = "unknown")
+    src      = @test_logs min_level=Logging.Error SingleFileSource(wav_path; recorder = "unknown")
     t_start, t_stop = time_range(src)
 
     result_full  = @test_logs (:warn, r"no calibration found") compute_psd(
@@ -613,7 +620,7 @@ end
 
 @testset "compute_psd(src): keyword forwarding — window_seconds and nfft" begin
     wav_path        = joinpath(@__DIR__, "test_files", "test_real.wav")
-    src             = SingleFileSource(wav_path; recorder = "unknown")
+    src             = @test_logs min_level=Logging.Error SingleFileSource(wav_path; recorder = "unknown")
     fs              = 48000.0
     t_start, t_stop = time_range(src)
 
@@ -639,7 +646,7 @@ end
     # Pass an explicit cal; verify it appears in PSDResult.cal and that
     # is_calibrated reflects the provided calibration (not auto-resolution).
     wav_path = joinpath(@__DIR__, "test_files", "test_real.wav")
-    src      = SingleFileSource(wav_path; recorder = "unknown")
+    src      = @test_logs min_level=Logging.Error SingleFileSource(wav_path; recorder = "unknown")
     explicit = ScalarCalibration(-100.0f0)
 
     result = compute_psd(src; window_seconds = 0.1, cal = explicit)
