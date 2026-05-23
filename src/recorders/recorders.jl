@@ -137,8 +137,7 @@ const NO_CALIBRATION_WARN_PREFIX = "No calibration entry"
     lookup_calibration(path, recorder, meta; strict=false)
 
 Purpose:     Return a `Calibration` object for a recording based on its
-             recorder family. Warns when no profile is found; raises when
-             `strict=true`.
+             recorder family.
 
 Arguments:
 - `path::AbstractString`: File path. Currently unused; reserved for per-file
@@ -146,17 +145,21 @@ Arguments:
 - `recorder::AbstractString`: Recorder family name (e.g. `"sm3m"`).
 - `meta`: Named tuple from `parse_filename`. Currently unused; reserved for
   per-serial calibration overrides in v2.
-- `strict::Bool = false`: If `true`, throw instead of returning `NoCalibration`.
+- `strict::Bool = false`: Controls behaviour when no calibration profile is
+  found. `strict=false` (default): emit `@warn` and return `NoCalibration()`
+  (exploration mode — forgiving). `strict=true`: throw an `ArgumentError`
+  naming the unrecognised recorder (production mode — fail fast). See DD-17.
 
-Returns:     `ScalarCalibration` for recorders with a scalar profile,
-             `TFCalibration` for recorders registered with a `tf_path`,
-             and `NoCalibration` when no profile is found.
+Returns:     `ScalarCalibration` for recorders with a scalar profile;
+             `TFCalibration` for recorders registered with a `tf_path`;
+             `NoCalibration` when no profile is found (with `@warn` at
+             `strict=false`, or a thrown `ArgumentError` at `strict=true`).
 
 Constraints: Only scalar calibration is returned in v1. TF calibration
              (frequency-dependent) is constructed separately when needed.
 
 Fails when:  `strict=true` and no calibration profile is registered for
-             the given recorder.
+             the given recorder (throws `ArgumentError`).
 
 Example:
 ```julia
@@ -193,9 +196,11 @@ function lookup_calibration(path::AbstractString,
     end
 
     if strict
-        error("lookup_calibration: no calibration profile for recorder " *
-              "\"$recorder\". Add a CalibrationProfile to CALIBRATION_PROFILES " *
-              "or pass strict=false to proceed with NoCalibration().")
+        throw(ArgumentError(
+            "lookup_calibration: no calibration profile for recorder " *
+            "\"$recorder\". Add a CalibrationProfile to CALIBRATION_PROFILES " *
+            "or pass strict=false to proceed with NoCalibration()."
+        ))
     end
 
     @warn "$NO_CALIBRATION_WARN_PREFIX for recorder; returning NoCalibration(). " *

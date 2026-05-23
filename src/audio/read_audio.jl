@@ -164,8 +164,14 @@ Arguments:
 - `site_id::Union{String,Nothing} = nothing`:
     Deployment site identifier (e.g. `"T1-C"`). Override for filename-parsed value.
 - `strict::Bool = false`:
-    If `true`, missing metadata that would otherwise produce a warning is upgraded
-    to a thrown `ArgumentError`. Currently applies to: missing timestamp.
+    Controls behaviour when metadata is missing or unrecognised. Propagates to
+    `lookup_calibration` and `parse_filename`. `strict=false` (default,
+    exploration mode): missing fields emit `@warn` and fall back to sentinel
+    values — `DateTime(0)` for a missing timestamp, `NoCalibration()` for an
+    unrecognised recorder. `strict=true` (production mode): any missing field
+    that would otherwise warn instead throws an `ArgumentError`. Use
+    `strict=true` in batch pipelines where silent fallbacks would corrupt
+    results; use `strict=false` for interactive exploration. See DD-17.
 
 Returns:     `Audiodata` with signal in raw linear amplitude (uncalibrated), sample
              rate as `Float32`, timestamps as `DateTime` (UTC where known), and

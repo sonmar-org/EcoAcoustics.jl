@@ -362,3 +362,30 @@ with reference tools.
 
 **Where:** `average_psd(result::PSDResult)` in `src/soundscape/psd.jl`. Convention
 explicitly stated in the function docstring and `docs/src/explanations/psd.md`.
+
+---
+
+## Session: Code review remediation (set 4)
+
+### DD-17 — `strict` parameter convention across `read_audio` and `lookup_calibration`
+
+**Decided:** Both functions follow the same rule: `strict=false` (default) emits
+`@warn` on missing or unrecognised metadata and returns a sentinel value
+(`NoCalibration()` for an unrecognised recorder, `DateTime(0)` for a missing
+timestamp); `strict=true` throws an `ArgumentError`. This was the pre-existing
+behaviour; DD-17 records it explicitly so future modifications to either function
+maintain the consistency.
+
+**Why:** A user who reads one function's docstring and calls the other should not
+be surprised. Consistent semantics across `read_audio` and `lookup_calibration`
+allow a single mental model: `strict=false` is exploration mode (forgiving, warns
+to keep you informed); `strict=true` is production mode (fail fast). The asymmetry
+that prompted the code review finding arose from an earlier version where
+`lookup_calibration` used `error()` (throwing `ErrorException`) rather than
+`throw(ArgumentError(...))`. The remediation session upgraded the exception type to
+`ArgumentError` and sharpened both docstrings to state the rule explicitly.
+
+**Where:** `lookup_calibration` in `src/recorders/recorders.jl` (docstring and
+strict-mode throw); `read_audio` in `src/audio/read_audio.jl` (docstring `strict`
+argument description). The `strict` kwarg is passed from `read_audio` into
+`lookup_calibration` and `parse_filename` at the call sites inside `read_audio`.
