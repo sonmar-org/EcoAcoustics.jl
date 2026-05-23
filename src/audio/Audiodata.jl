@@ -231,6 +231,10 @@ function apply_calibration(a::Audiodata; plans::Union{Nothing, Tuple} = nothing)
         apply_calibration!(out, a.sig, a.calibration)
     end
 
+    # IMPORTANT: this is a complete field-by-field copy of a.metadata.
+    # When a new field is added to RecordingMetadata, it must also be
+    # added here, or it will be silently dropped from the output. Julia's
+    # type system does not enforce exhaustiveness on keyword arguments.
     return Audiodata(out, a.fs, a.starttime;
                      is_calibrated = true,
                      calibration   = a.calibration,

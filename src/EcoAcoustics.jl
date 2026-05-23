@@ -13,7 +13,7 @@ export Calibration, NoCalibration, ScalarCalibration, TFCalibration
 export Audiodata, RecordingMetadata
 export endtime, duration, nsamples
 
-export apply_calibration!, apply_calibration, apply_calibration_psd!
+export apply_calibration!, apply_calibration
 
 export RecorderProfile, CalibrationProfile
 export RECORDER_PROFILES, CALIBRATION_PROFILES

@@ -78,8 +78,6 @@ function parse_filename(path::AbstractString;
     base = basename(path)
     basename_noext = splitext(base)[1]
 
-    # Look up recorder profile, or fall back to a generic profile
-
     # Look up recorder profile. Unknown recorders do NOT use generic parsing.
     profile = get(RECORDER_PROFILES, String(recorder), nothing)
 

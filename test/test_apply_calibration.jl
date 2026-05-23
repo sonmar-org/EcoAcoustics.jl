@@ -200,23 +200,6 @@ end
     @test out_plans ≈ out_noplans  rtol = 1e-14
 end
 
-# ─── TFCalibration — frequency domain (PSD path) ─────────────────────────────
-
-@testset "TFCalibration frequency domain (apply_calibration_psd!)" begin
-    cal   = _test_tf([1.0, 10000.0], [-100.0, -100.0])  # flat -100 dB
-    freqs = [0.0, 500.0, 1000.0, 5000.0]
-    psd   = [50.0, 60.0, 70.0, 80.0]           # arbitrary dBFS values
-    out   = copy(psd)
-
-    apply_calibration_psd!(out, freqs, cal)
-
-    # Each value should increase by 100 (subtracting -100 adds 100)
-    @test out ≈ psd .+ 100.0  atol = 1e-4
-
-    # Length mismatch throws
-    @test_throws AssertionError apply_calibration_psd!(out, freqs[1:3], cal)
-end
-
 # ─── lookup_calibration returns TFCalibration for Rockhopper (legacy path) ───
 # NOTE: In deliverable 2, Rockhopper moves to get_profile(:rockhopper). Until
 # then, the CALIBRATION_PROFILES entry with tf_path still routes through here.

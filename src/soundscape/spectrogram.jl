@@ -255,13 +255,13 @@ function spectrogram(signal::AbstractVector{Float64};
     # ── STFT loop ─────────────────────────────────────────────────────────────
 
     for i in 1:num_frames
-        # start: 1-indexed position of the first sample of frame i.
-        start = (i - 1) * hop + 1
+        # frame_start: 1-indexed position of the first sample of frame i.
+        frame_start = (i - 1) * hop + 1
 
         # @view creates a zero-copy view of the signal slice; without @view,
-        # signal[start:end] allocates a copy. The .= broadcasts the element-wise
+        # signal[frame_start:end] allocates a copy. The .= broadcasts the element-wise
         # product directly into frame_buffer without allocation.
-        frame_seg = @view signal[start : start + window_length - 1]
+        frame_seg = @view signal[frame_start : frame_start + window_length - 1]
         frame_buffer[1:window_length] .= window_vec .* frame_seg
 
         # fft_plan_actual * frame_buffer computes the rfft out-of-place and

@@ -347,6 +347,13 @@ function apply_calibration!(out::AbstractVector{Float64},
     X     = fwd_plan * signal
     freqs = range(0.0, Float64(fs) / 2; length = length(X))
 
+    # GPU-blocker: this interpolation loop uses _interp_tf / searchsortedfirst
+    # which are not available inside GPU device code. Before this
+    # apply_calibration! method can be retargeted to operate on CuArray or
+    # other GPU arrays, the loop must be replaced with a KernelAbstractions.jl
+    # @kernel that implements sorted binary search on the device side.
+    # The NoCalibration and ScalarCalibration methods do not have this
+    # constraint.
     # Interpolate the TF sensitivity (in dB) onto each FFT bin using dB-linear
     # interpolation, then convert to a linear amplitude multiplier.
     # Because tf_dB is negative (Raven canonical form, e.g. −229 dB), negating
@@ -488,6 +495,13 @@ function apply_calibration!(psd_linear::Matrix{Float64},
     # avoids repeated exponentiation inside the per-bin loop.
     tf_lin = 10 .^ (cal.tf_dB ./ 10)
 
+    # GPU-blocker: this interpolation loop uses _interp_linear_power / searchsortedfirst
+    # which are not available inside GPU device code. Before this
+    # apply_calibration! method can be retargeted to operate on CuArray or
+    # other GPU arrays, the loop must be replaced with a KernelAbstractions.jl
+    # @kernel that implements sorted binary search on the device side.
+    # The NoCalibration and ScalarCalibration methods do not have this
+    # constraint.
     # For each frequency bin (row), divide all frames by the interpolated TF.
     # @views ensures psd_linear[k, :] is a zero-copy slice, so ./ is in-place
     # on the matrix without allocating a temporary row vector.
@@ -496,54 +510,6 @@ function apply_calibration!(psd_linear::Matrix{Float64},
         @views psd_linear[k, :] ./= factor
     end
     return psd_linear
-end
-
-# ─── apply_calibration_psd! ───────────────────────────────────────────────────
-
-"""
-    apply_calibration_psd!(psd, freqs, cal::TFCalibration)
-
-Purpose:     Apply frequency-dependent calibration to a power spectral density
-             vector in-place (dB domain). Converts from dBFS/Hz to dB re 1 µPa²/Hz
-             by subtracting the TF sensitivity at each frequency. Interpolation
-             is in dB space (linear-in-dB). This is the legacy 1D dB path;
-             the canonical PSD path is the Matrix-form `apply_calibration!` above.
-
-Arguments:
-- `psd::AbstractVector`: PSD values in dB (dBFS/Hz). Modified in-place.
-- `freqs::AbstractVector`: Frequency axis in Hz. Same length as `psd`.
-- `cal::TFCalibration`: Calibration TF. `tf_dB` in dB re full-scale per µPa
-  (canonical negative convention). Interpolated onto `freqs` with edge clamping.
-
-Returns:     `psd`, modified in-place.
-
-Constraints:
-- `length(psd)` must equal `length(freqs)`.
-- Calibration is subtracted in dB: `psd[i] -= tf_dB(freqs[i])`. Because
-  `tf_dB` is negative (e.g. −229 dB), the PSD values increase after subtraction.
-- Frequencies outside `cal.frequency` bounds are clamped to the nearest edge.
-
-Fails when:  `length(psd) ≠ length(freqs)`.
-
-Example:
-```julia
-apply_calibration_psd!(psd_dbfs, freqs_hz, cal)   # now psd is in dB re 1 µPa²/Hz
-```
-
-Do not use when: The calibrated time-domain waveform is needed — use
-`apply_calibration!` with `cal::TFCalibration` instead.
-"""
-function apply_calibration_psd!(psd::AbstractVector,
-                                freqs::AbstractVector,
-                                cal::TFCalibration)
-    @assert length(psd) == length(freqs) begin
-        "apply_calibration_psd!: psd and freqs must have the same length, " *
-        "got $(length(psd)) and $(length(freqs))"
-    end
-    for i in eachindex(psd)
-        psd[i] -= _interp_tf(cal.frequency, cal.tf_dB, freqs[i])
-    end
-    return psd
 end
 
 # ─── Out-of-place wrappers ────────────────────────────────────────────────────

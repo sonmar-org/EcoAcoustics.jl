@@ -143,8 +143,9 @@ Arguments:
   per-serial calibration overrides in v2.
 - `strict::Bool = false`: If `true`, throw instead of returning `NoCalibration`.
 
-Returns:     A `Calibration` subtype: `ScalarCalibration` when a profile
-             exists, `NoCalibration` otherwise.
+Returns:     `ScalarCalibration` for recorders with a scalar profile,
+             `TFCalibration` for recorders registered with a `tf_path`,
+             and `NoCalibration` when no profile is found.
 
 Constraints: Only scalar calibration is returned in v1. TF calibration
              (frequency-dependent) is constructed separately when needed.

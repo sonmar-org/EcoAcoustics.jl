@@ -107,25 +107,6 @@ At fs = 196,000 Hz (Rockhopper) with `fir_length = 512`, the causal group delay 
 
 **Note on filtfilt design:** `filtfilt` applies the filter twice (forward + backward), giving an effective magnitude response of |H(f)|². To achieve the correct calibration |H(f)|² = TF_linear, the FIR is designed from `sqrt.(TF_linear)` for the `:zero` path. The `:causal` path uses TF_linear directly. Both paths produce the same calibrated output; they differ only in phase and edge behaviour.
 
-### Frequency-domain: `apply_calibration_psd!`
-
-Use this in metric pipelines (SPL, LTSA) where you are working directly with PSD values in dB. It is much faster than the time-domain method: one interpolation per frequency bin, no FFT.
-
-```julia
-apply_calibration_psd!(psd_dbfs, freqs_hz, cal)
-# psd_dbfs is now in dB re 1 µPa²/Hz
-```
-
-Internally, this subtracts the interpolated TF value at each frequency bin from the PSD:
-
-```
-psd_calibrated[i] = psd[i] − tf_db(freqs[i])
-```
-
-Because `tf_db` is negative (e.g. −153 dB), subtracting it adds a large positive number — the PSD values increase, which is correct when converting from dBFS to µPa².
-
-Frequencies outside the TF range (including freq = 0, the DC bin) are clamped to the nearest edge value without warning. This is expected: the DC bin is always present in an FFT output but absent from typical manufacturer TF data.
-
 ---
 
 ## The `is_calibrated` flag

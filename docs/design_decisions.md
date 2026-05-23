@@ -258,7 +258,7 @@ form by subtracting `20·log10(vmax_peak_V)`. The resulting `TFCalibration.forma
 is `:rockhopper_calcurves_csv`.
 
 **Why:** The Cornell calibration is in dB re 1 V/µPa at the ADC input. The package
-canonical form is dB re ADC full-scale per µPa, which is what `apply_calibration_psd!`
+canonical form is dB re ADC full-scale per µPa, which is what `apply_calibration!`
 expects. The conversion is `tf_dB_canonical = AnalogSensitivity_dB − 20·log10(Vmax_peak_V)`.
 For `Vmax_peak_V = 5.0 V`, the shift is `20·log10(5) ≈ 13.98 dB`. The `format` field
 in `TFCalibration` (`:rockhopper_calcurves_csv`) distinguishes this multi-column header

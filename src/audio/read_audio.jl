@@ -243,9 +243,9 @@ function read_audio(path::AbstractString;
         end
 
     elseif ext == ".flac"
-        # `local f` is required because Julia scopes variables to the block in
-        # which they are first assigned. Without it, `f` would be invisible outside
-        # the try block, and the lines below the catch could not use it.
+        # Declare f before the try block so that it's clearly in scope even if
+        # the assignment throws — without local, a reader might wonder if f is
+        # captured from an outer scope.
         local f
         try
             f = FLACDecoder(String(path))  # FLACDecoder requires String, not AbstractString
