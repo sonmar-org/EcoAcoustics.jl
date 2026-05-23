@@ -77,7 +77,7 @@ function apply_calibration!(out::AbstractArray,
         "apply_calibration!: out and signal must have the same length, " *
         "got $(length(out)) and $(length(signal))"
     end
-    scale   = Float64(10^(-cal.system_sensitivity_dB / 20))
+    scale   = 10.0 ^ (-Float64(cal.system_sensitivity_dB) / 20.0)
     backend = KernelAbstractions.get_backend(out)
     kernel! = _scalar_cal_kernel!(backend)
     kernel!(out, signal, scale; ndrange = length(signal))

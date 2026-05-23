@@ -148,11 +148,10 @@ result    = compute_psd(audio_cal; window_seconds = 1.0)
 ```
 
 In this case, `compute_psd` detects `audio_cal.is_calibrated == true` and
-applies `NoCalibration()` at the PSD layer (DD-14). The PSD values are
-physically correct (in µPa²/Hz) because the signal was already calibrated, but
-`result.is_calibrated` will be `false` — it records whether PSD-layer
-calibration was applied, not whether the signal is in physical units. This
-known semantic gap is documented in the `compute_psd(Audiodata)` docstring.
+applies `NoCalibration()` at the PSD layer (DD-14). `result.is_calibrated`
+will be `true` — the wrapper propagates `audio.is_calibrated` into the
+`PSDResult` even when PSD-layer calibration is `NoCalibration`. This means
+`psd_units` correctly returns `:µPa²_per_Hz` for pre-calibrated signals.
 
 ---
 

@@ -193,3 +193,76 @@ end
     @test EcoAcoustics.nsamples(chunk) == expected_n
     @test all(isapprox.(chunk.sig, 0.5; atol = 1e-10))
 end
+
+# ─── coverage_fraction: binary-search correctness ────────────────────────────
+#
+# Verifies that the binary-search implementation of coverage_fraction produces
+# identical results to the original O(N) linear scan on a 120-file index.
+# Covers all edge cases from the finding: window before all files, after all
+# files, in a gap, spanning a file boundary, and mid-deployment.
+#
+# The index is synthetic (no files on disk) — coverage_fraction reads only
+# idx.start_time and idx.end_time, never file paths.
+
+@testset "coverage_fraction: binary search matches linear scan (120-file index)" begin
+    T0          = DateTime(2023, 6, 1)
+    n_files     = 120
+    file_dur_ms = 10_000   # 10 s per file
+    gap_dur_ms  =  5_000   #  5 s gap between files
+    stride_ms   = file_dur_ms + gap_dur_ms  # 15 s per slot
+
+    starts = [T0 + Millisecond((i - 1) * stride_ms)               for i in 1:n_files]
+    ends   = [T0 + Millisecond((i - 1) * stride_ms + file_dur_ms) for i in 1:n_files]
+
+    buf = IOBuffer()
+    Arrow.write(buf, (
+        file_path           = ["file$i.wav"                       for i in 1:n_files],
+        start_time          = starts,
+        end_time            = ends,
+        fs                  = fill(Float32(1000),  n_files),
+        nsamples            = fill(Int64(10_000),  n_files),
+        recorder            = fill("sm3m",          n_files),
+        recorder_id         = Union{String,Missing}[missing for _ in 1:n_files],
+        site_id             = Union{String,Missing}[missing for _ in 1:n_files],
+        hydrophone_id       = Union{String,Missing}[missing for _ in 1:n_files],
+        time_uncertainty_ms = Union{Float64,Missing}[missing for _ in 1:n_files],
+        notes               = Union{String,Missing}[missing for _ in 1:n_files],
+    ))
+    seekstart(buf)
+    src = EcoAcoustics.IndexedFileSource(Arrow.Table(buf); root = tempdir())
+
+    # Reference: original O(N) linear scan — used only inside this testset.
+    function _linear_coverage(src, t_start, t_stop)
+        t_stop <= t_start && return 0.0
+        win_ms = (t_stop - t_start).value
+        cov_ms = 0
+        idx = src.index
+        for i in 1:length(idx.start_time)
+            ov_start = max(t_start, idx.start_time[i])
+            ov_stop  = min(t_stop,  idx.end_time[i])
+            ov_stop > ov_start && (cov_ms += (ov_stop - ov_start).value)
+        end
+        return cov_ms / win_ms
+    end
+
+    cases = [
+        # (label,                                      query_start,                       query_stop)
+        ("entirely before all files",                  T0 - Millisecond(60_000),          T0 - Millisecond(1)),
+        ("entirely after all files",                   ends[end] + Millisecond(1),        ends[end] + Millisecond(60_000)),
+        ("window falls in gap between files 60–61",    ends[60],                          starts[61]),
+        ("spans file-60/61 boundary",                  ends[60] - Millisecond(2_000),     starts[61] + Millisecond(2_000)),
+        ("single file at start of deployment",         starts[1],                         ends[1]),
+        ("single file at end of deployment",           starts[end],                       ends[end]),
+        ("full deployment span",                       starts[1],                         ends[end]),
+        ("partial overlap at leading edge of file 1",  starts[1] - Millisecond(5_000),   ends[1]),
+        ("partial overlap at trailing edge of last",   starts[end],                       ends[end] + Millisecond(5_000)),
+        ("mid-deployment spanning files 30–90",        starts[30],                        ends[90]),
+        ("window spanning exactly one file boundary",  ends[50],                          ends[51]),
+        ("degenerate window (stop == start)",          starts[1],                         starts[1]),
+    ]
+
+    for (label, q_start, q_stop) in cases
+        expected = _linear_coverage(src, q_start, q_stop)
+        @test EcoAcoustics.coverage_fraction(src, q_start, q_stop) ≈ expected atol=1e-10
+    end
+end

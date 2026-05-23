@@ -195,13 +195,26 @@ function coverage_fraction(source::IndexedFileSource,
     window_ms  = (stop - start).value  # Millisecond count as Int64
     covered_ms = 0
     idx = source.index
-    for i in 1:length(idx.start_time)
+
+    # searchsortedlast gives the last row whose start_time <= stop.
+    # Every row past hi has start_time > stop and cannot overlap [start, stop).
+    # Returns 0 when every start_time is greater than stop, so the loop below
+    # simply does not execute.
+    hi = searchsortedlast(idx.start_time, stop)
+
+    # Walk backward from hi. The index is sorted ascending by start_time
+    # (build_index guarantee) and files are non-overlapping, so end_time is
+    # also non-decreasing. Once end_time[i] <= start, all earlier rows also
+    # end before the window begins — break immediately.
+    for i in hi:-1:1
+        idx.end_time[i] > start || break
         overlap_start = max(start, idx.start_time[i])
         overlap_stop  = min(stop,  idx.end_time[i])
         if overlap_stop > overlap_start
             covered_ms += (overlap_stop - overlap_start).value
         end
     end
+
     return covered_ms / window_ms
 end
 

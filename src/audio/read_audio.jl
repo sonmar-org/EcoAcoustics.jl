@@ -150,7 +150,8 @@ Arguments:
     Override for recording start time. When provided, takes precedence over any
     timestamp parsed from the filename — including `DateTime(0)` if you explicitly
     want year zero. When `nothing` (default), the filename is parsed first; if that
-    also fails, falls back to `DateTime(0)` with a warning (if `strict=true`).
+    also fails, a warning is always emitted and `DateTime(0)` is returned. When
+    `strict=true`, an `ArgumentError` is thrown instead of warning.
 - `recorder::AbstractString = "unknown"`:
     Recorder family name (e.g. `"rockhopper"`, `"sm3m"`, `"ls1x"`, `"snap"`).
     Used to select filename parsing rules and calibration profile.
@@ -163,7 +164,8 @@ Arguments:
 - `site_id::Union{String,Nothing} = nothing`:
     Deployment site identifier (e.g. `"T1-C"`). Override for filename-parsed value.
 - `strict::Bool = false`:
-    If `true`, emit warnings when calibration or metadata fields are missing.
+    If `true`, missing metadata that would otherwise produce a warning is upgraded
+    to a thrown `ArgumentError`. Currently applies to: missing timestamp.
 
 Returns:     `Audiodata` with signal in raw linear amplitude (uncalibrated), sample
              rate as `Float32`, timestamps as `DateTime` (UTC where known), and
@@ -200,12 +202,25 @@ function read_audio(path::AbstractString;
     filename_meta = parse_filename(path; recorder=recorder, strict=strict)
     cal           = lookup_calibration(path, recorder, filename_meta; strict=strict)
 
-    # Merge starttime: caller override takes precedence; fall back to filename; warn if neither.
+    # Merge starttime: caller override takes precedence; fall back to filename;
+    # always warn (or throw if strict) when neither is available.
     merged_starttime =
-        starttime !== nothing               ? starttime :
-        filename_meta.timestamp !== nothing ? filename_meta.timestamp :
-        (strict && @warn("read_audio: no timestamp found in filename or arguments." *
-                         " Defaulting to DateTime(0).", path=path); DateTime(0))
+        if starttime !== nothing
+            starttime
+        elseif filename_meta.timestamp !== nothing
+            filename_meta.timestamp
+        elseif strict
+            throw(ArgumentError(
+                "read_audio: no timestamp found in filename or arguments. " *
+                "Supply starttime= explicitly or use a recognized filename pattern. " *
+                "path=" * string(path)
+            ))
+        else
+            @warn("read_audio: no timestamp found in filename or arguments. " *
+                  "Defaulting to DateTime(0). Supply starttime= explicitly or " *
+                  "use a recognized filename pattern.", path=path)
+            DateTime(0)
+        end
 
     # Merge site_id: keyword argument overrides filename.
     merged_site_id =

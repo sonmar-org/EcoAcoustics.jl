@@ -386,7 +386,7 @@ Purpose:     No-op for the PSD matrix calibration path. `psd_linear` is
              Called by `compute_psd` when no calibration is available.
 
 Arguments:
-- `psd_linear::Matrix{Float64}`: PSD in linear units. Not modified.
+- `psd_linear::AbstractMatrix{Float64}`: PSD in linear units. Not modified.
 - `freqs::Vector{Float64}`: Bin-centre frequencies. Not used.
 - `::NoCalibration`: Calibration marker (no data).
 
@@ -401,7 +401,7 @@ Example:
 apply_calibration!(psd_matrix, freqs, NoCalibration())   # no-op
 ```
 """
-function apply_calibration!(psd_linear::Matrix{Float64},
+function apply_calibration!(psd_linear::AbstractMatrix{Float64},
                             freqs::Vector{Float64},
                             ::NoCalibration)
     return psd_linear
@@ -417,7 +417,7 @@ Purpose:     Apply scalar (frequency-independent) calibration to a linear PSD
              −153 dB), the multiplier is large (e.g. ≈ 2×10¹⁵ for SM3M).
 
 Arguments:
-- `psd_linear::Matrix{Float64}`: PSD in full-scale²/Hz. Modified in-place.
+- `psd_linear::AbstractMatrix{Float64}`: PSD in full-scale²/Hz. Modified in-place.
 - `freqs::Vector{Float64}`: Bin-centre frequencies in Hz. Not used directly;
   accepted for dispatch consistency with the TFCalibration method.
 - `cal::ScalarCalibration`: Holds `system_sensitivity_dB` in dB re full-scale
@@ -436,7 +436,7 @@ cal = ScalarCalibration(-153.0f0)      # SM3M
 apply_calibration!(psd_matrix, freqs, cal)
 ```
 """
-function apply_calibration!(psd_linear::Matrix{Float64},
+function apply_calibration!(psd_linear::AbstractMatrix{Float64},
                             freqs::Vector{Float64},
                             cal::ScalarCalibration)
     # Power conversion: amplitude factor is 10^(-S/20) (as in the KA kernel),
