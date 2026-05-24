@@ -570,6 +570,30 @@ end
     end
 end
 
+# ─── fft_plan forwarding ──────────────────────────────────────────────────────
+
+@testset "compute_psd(Audiodata): fft_plan forwarded to spectrogram (DD-04)" begin
+    # Verify that fft_plan reaches spectrogram by triggering its plan-size-mismatch
+    # assertion (DD-04). A plan built for nfft=512 is passed to a compute_psd call
+    # whose window would use nfft=4800; spectrogram asserts first(plan.sz)==nfft.
+    # If fft_plan were silently dropped, no assertion would fire.
+    N  = 4800
+    fs = 48000.0
+    audio = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                      calibration = ScalarCalibration(-153.0f0))
+
+    # window_seconds = N/fs = 0.1 s → nfft = 4800; plan built for 512 ≠ 4800.
+    wrong_plan = make_spectrogram_plan(fs, 512 / fs)
+    @test_throws AssertionError compute_psd(audio;
+                                            window_seconds = N / fs,
+                                            fft_plan       = wrong_plan)
+
+    # Matching plan (nfft = 4800) → no assertion; result is calibrated.
+    right_plan = make_spectrogram_plan(fs, N / fs)
+    result = compute_psd(audio; window_seconds = N / fs, fft_plan = right_plan)
+    @test result.is_calibrated
+end
+
 # ─── compute_psd(AbstractAudioSource, start, stop) ────────────────────────────
 
 @testset "compute_psd(AbstractAudioSource): delegates to Audiodata wrapper" begin

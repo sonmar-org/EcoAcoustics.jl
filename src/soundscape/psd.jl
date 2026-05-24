@@ -239,7 +239,7 @@ end
 
 """
     compute_psd(audio::Audiodata; window_seconds, overlap_fraction=0.5,
-                window=:hann, nfft=nothing) -> PSDResult
+                window=:hann, nfft=nothing, fft_plan=nothing) -> PSDResult
 
 Purpose:     Convenience wrapper: compute PSD directly from an `Audiodata`
              object. Calls [`spectrogram`](@ref) internally and resolves
@@ -263,6 +263,10 @@ Arguments:
 - `overlap_fraction::Real = 0.5`: Frame overlap fraction. Forwarded to `spectrogram`.
 - `window::Symbol = :hann`: Window function. Forwarded to `spectrogram`.
 - `nfft::Union{Int,Nothing} = nothing`: FFT length. Forwarded to `spectrogram`.
+- `fft_plan = nothing`: Pre-computed FFTW plan. When supplied, forwarded to
+  `spectrogram` to avoid per-call plan construction overhead. Build with
+  [`make_spectrogram_plan`](@ref). Must match the `nfft` that `spectrogram`
+  would choose; a size mismatch throws `AssertionError` (DD-04).
 - `cal::Union{Calibration,Nothing} = nothing`: Override calibration. When
   supplied, bypasses `_psd_calibration` and applies `cal` directly. When
   `nothing` (default), calibration is auto-resolved from `audio.metadata`.
@@ -291,13 +295,15 @@ function compute_psd(audio::Audiodata;
                      overlap_fraction::Real          = 0.5,
                      window::Symbol                  = :hann,
                      nfft::Union{Int,Nothing}        = nothing,
+                     fft_plan                        = nothing,
                      cal::Union{Calibration,Nothing} = nothing) :: PSDResult
     spec = spectrogram(audio.sig;
                        fs               = Float64(audio.fs),
                        window_seconds   = window_seconds,
                        overlap_fraction = overlap_fraction,
                        window           = window,
-                       nfft             = nfft)
+                       nfft             = nfft,
+                       fft_plan         = fft_plan)
     resolved_cal = cal !== nothing ? cal : _psd_calibration(audio)
     result = compute_psd(spec, resolved_cal)
     # Propagate audio.is_calibrated: a pre-calibrated signal is in physical
@@ -330,7 +336,7 @@ Arguments:
 - `gap_handling::Symbol = :zero_fill`: Gap handling passed to
   `read_audio_range`. `:zero_fill` inserts silence for gaps;
   `:error` raises on any gap.
-- `window_seconds::Real`, `overlap_fraction`, `window`, `nfft`:
+- `window_seconds::Real`, `overlap_fraction`, `window`, `nfft`, `fft_plan`:
   Forwarded to `spectrogram` (see `compute_psd(audio::Audiodata; ...)`).
 
 Returns:     [`PSDResult`](@ref) for the requested window.
@@ -358,6 +364,7 @@ function compute_psd(src::AbstractAudioSource,
                      overlap_fraction::Real          = 0.5,
                      window::Symbol                  = :hann,
                      nfft::Union{Int,Nothing}        = nothing,
+                     fft_plan                        = nothing,
                      cal::Union{Calibration,Nothing} = nothing) :: PSDResult
     audio = read_audio_range(src, start, stop; gap_handling = gap_handling)
     return compute_psd(audio;
@@ -365,6 +372,7 @@ function compute_psd(src::AbstractAudioSource,
                        overlap_fraction = overlap_fraction,
                        window           = window,
                        nfft             = nfft,
+                       fft_plan         = fft_plan,
                        cal              = cal)
 end
 

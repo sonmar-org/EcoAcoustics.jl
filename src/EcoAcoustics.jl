@@ -34,6 +34,10 @@ export chunks, process_chunks
 export SpectrogramResult, spectrogram, make_spectrogram_plan
 export PSDResult, compute_psd, psd_units, average_psd, to_dB
 
+export BandSPL, SPLResult, compute_spl
+export octave_bands, tol_bands, decidecade_bands, millidecade_bands
+export compute_octave, compute_tol, compute_decidecade, compute_millidecade
+
 # ─── Includes ─────────────────────────────────────────────────────────────────
 
 include("audio/dsp_helpers.jl")
@@ -58,5 +62,7 @@ include("sources/chunks.jl")
 
 include("soundscape/spectrogram.jl")
 include("soundscape/psd.jl")
+include("soundscape/bands.jl")
+include("soundscape/spl.jl")
 
 end

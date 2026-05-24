@@ -24,4 +24,5 @@ const TEST_DIR = joinpath(@__DIR__, "test_files")
     include("test_spectrogram.jl")
     include("test_psd.jl")
     include("test_psd_manta_validation.jl")
+    include("test_spl.jl")
 end
