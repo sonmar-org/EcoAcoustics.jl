@@ -313,3 +313,161 @@ end
     @test length(result_short.bands[:broadband].spl_dB) == 19
     @test length(result_long.bands[:broadband].spl_dB)  == 3
 end
+
+# ─── D5: fft_plan forwarding through compute_spl(Audiodata) ──────────────────
+
+@testset "compute_spl(Audiodata): fft_plan forwarded to spectrogram (DD-04)" begin
+    # A wrong-size plan must propagate through compute_spl → compute_psd →
+    # spectrogram and trigger DD-04's plan-size AssertionError. Confirms
+    # fft_plan is not silently dropped at any layer.
+    N     = 4800
+    fs    = 48000.0
+    audio = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                      calibration = ScalarCalibration(-153.0f0))
+
+    # Plan built for nfft=512 but window covers the full N=4800 samples → mismatch.
+    wrong_plan = make_spectrogram_plan(fs, 512 / fs)
+    @test_throws AssertionError compute_spl(audio;
+        window_seconds = N / fs, fft_plan = wrong_plan)
+
+    # Matching plan size → should compute without error.
+    right_plan = make_spectrogram_plan(fs, N / fs)
+    result = compute_spl(audio; window_seconds = N / fs, fft_plan = right_plan)
+    @test result.units === :dB_re_1µPa
+end
+
+# ─── D5: compute_tol ─────────────────────────────────────────────────────────
+
+@testset "compute_tol(PSDResult): key delegation and value equivalence" begin
+    # compute_tol must produce exactly the same result as calling compute_spl
+    # with bands = tol_bands(low_Hz, high_Hz) manually.
+    #
+    # Range [20, 400] Hz avoids two edge cases from _make_test_psd (fs=1000,
+    # Nyquist=500, df=1 Hz):
+    #   • low_Hz=10 would include :tol_10 whose lower edge ≈ 8.9 Hz < 10 Hz,
+    #     triggering the sub-10-Hz @warn.
+    #   • high_Hz=500 would include :tol_500 whose upper edge ≈ 561 Hz > Nyquist,
+    #     causing compute_spl to throw.
+    # 400 Hz upper edge = 400 × 2^(1/6) ≈ 449 Hz < 500 Hz Nyquist. Safe.
+    psd    = _make_test_psd()   # fs=1000 Hz, Nyquist=500 Hz, df=1 Hz
+    low_Hz  = 20.0
+    high_Hz = 400.0
+
+    result_tol    = compute_tol(psd; low_Hz, high_Hz)
+    result_manual = compute_spl(psd; bands = tol_bands(low_Hz, high_Hz))
+
+    # Keys must match the band generator output exactly.
+    expected_bands = tol_bands(low_Hz, high_Hz)
+    @test Set(keys(result_tol.bands)) == Set(keys(expected_bands))
+
+    # Values must match the manual path for every band.
+    for label in keys(expected_bands)
+        @test result_tol.bands[label].mean_dB ≈
+              result_manual.bands[label].mean_dB atol=1e-12
+    end
+end
+
+@testset "compute_tol(Audiodata): round-trip and fft_plan forwarding" begin
+    # N=4800, fs=48000, window_seconds=0.1 → window_length=4800, df=10 Hz.
+    # low_Hz=100 avoids TOL bands narrower than df (e.g. :tol_16 spans ~3 Hz).
+    # 100 Hz TOL band spans ≈ 22 Hz > df=10 Hz — guaranteed at least 2 bins.
+    # high_Hz=10000: highest included center is 10000 Hz; its upper edge ≈ 11225 Hz
+    # ≪ 24000 Hz Nyquist — no Nyquist edge error.
+    N      = 4800
+    fs     = 48000.0
+    audio  = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
+                       calibration = ScalarCalibration(-153.0f0))
+    low_Hz  = 100.0
+    high_Hz = 10000.0
+
+    # Round-trip: compute_tol(audio) ≡ compute_spl(compute_psd(audio), bands=tol_bands(...))
+    result_wrapper = compute_tol(audio; low_Hz, high_Hz, window_seconds = 0.1)
+    psd_manual     = compute_psd(audio; window_seconds = 0.1)
+    result_manual  = compute_spl(psd_manual; bands = tol_bands(low_Hz, high_Hz))
+
+    @test Set(keys(result_wrapper.bands)) == Set(keys(result_manual.bands))
+    for label in keys(result_manual.bands)
+        @test result_wrapper.bands[label].mean_dB ≈
+              result_manual.bands[label].mean_dB atol=1e-12
+    end
+
+    # fft_plan forwarding: wrong-plan size → AssertionError propagates through
+    # compute_tol → compute_psd → spectrogram (DD-04).
+    wrong_plan = make_spectrogram_plan(fs, 512 / fs)
+    @test_throws AssertionError compute_tol(audio;
+        window_seconds = N / fs, fft_plan = wrong_plan)
+end
+
+# ─── D5: compute_octave ───────────────────────────────────────────────────────
+
+@testset "compute_octave(PSDResult): key delegation" begin
+    # Keys of compute_octave output must equal keys of octave_bands(low_Hz, high_Hz).
+    # high_Hz=250: highest octave center ≤ 250 is 250 Hz itself; its upper edge
+    # = 250 × √2 ≈ 353.5 Hz < 500 Hz Nyquist — no Nyquist edge error.
+    # (high_Hz=500 would include :oct_500 whose edge ≈ 707 Hz > Nyquist.)
+    psd     = _make_test_psd()   # fs=1000 Hz, Nyquist=500 Hz
+    low_Hz  = 10.0
+    high_Hz = 250.0
+
+    result = compute_octave(psd; low_Hz, high_Hz)
+    @test Set(keys(result.bands)) == Set(keys(octave_bands(low_Hz, high_Hz)))
+
+    # Expected centers in [10, 250]: 16, 31.5, 63, 125, 250 Hz (5 bands).
+    @test haskey(result.bands, :oct_16)
+    @test haskey(result.bands, :oct_31_5)
+    @test haskey(result.bands, :oct_250)
+    # :oct_500 center > 250 Hz → must not appear.
+    @test !haskey(result.bands, :oct_500)
+end
+
+# ─── D5: compute_decidecade ───────────────────────────────────────────────────
+
+@testset "compute_decidecade == compute_tol for identical arguments" begin
+    # By definition decidecade_bands = tol_bands, so the wrappers must
+    # produce identical results for any shared argument set.
+    # Same [20, 400] Hz range as the compute_tol(PSDResult) test.
+    psd     = _make_test_psd()   # fs=1000 Hz
+    low_Hz  = 20.0
+    high_Hz = 400.0
+
+    result_dd  = compute_decidecade(psd; low_Hz, high_Hz)
+    result_tol = compute_tol(psd;       low_Hz, high_Hz)
+
+    @test Set(keys(result_dd.bands)) == Set(keys(result_tol.bands))
+    for label in keys(result_tol.bands)
+        @test result_dd.bands[label].mean_dB ≈
+              result_tol.bands[label].mean_dB atol=1e-12
+        @test result_dd.bands[label].band == result_tol.bands[label].band
+    end
+end
+
+# ─── D5: compute_millidecade ─────────────────────────────────────────────────
+
+@testset "compute_millidecade(PSDResult): key delegation and band count" begin
+    # Millidecade bands are very narrow: ~2.3 Hz wide at 1 kHz, ~0.023 Hz at
+    # 10 Hz. The _make_test_psd() synthetic PSD has df=1 Hz (nfft=1000,
+    # fs=1000), which is too coarse for millidecade bands below ~435 Hz.
+    # Use a higher-fs PSD (fs=10000, nfft=10000 → df=1 Hz, Nyquist=5000 Hz)
+    # and the [900, 1100] Hz range where each band spans ~2.3 Hz > df=1 Hz.
+    #
+    # millidecade_bands(900, 1100):
+    #   n_lo = ceil(1000 × log10(900))  = ceil(2954.24) = 2955
+    #   n_hi = floor(1000 × log10(1100)) = floor(3041.39) = 3041
+    #   count = 3041 − 2955 + 1 = 87
+    #
+    # All band edges < 1100 × 10^(0.5/1000) ≈ 1101.3 Hz ≪ 5000 Hz Nyquist.
+    psd = _make_test_psd(fs = Float32(10000.0), nfft = 10000, n_freqs = 5001)
+    low_Hz  = 900.0
+    high_Hz = 1100.0
+
+    result         = compute_millidecade(psd; low_Hz, high_Hz)
+    expected_bands = millidecade_bands(low_Hz, high_Hz)
+
+    @test Set(keys(result.bands)) == Set(keys(expected_bands))
+    @test length(result.bands) == 87
+
+    # :mdec_3000 → f_c = 10^3 = 1000 Hz ∈ [900, 1100] → must appear.
+    @test haskey(result.bands, :mdec_3000)
+    # :mdec_4000 → f_c = 10^4 = 10000 Hz ∉ [900, 1100] → must not appear.
+    @test !haskey(result.bands, :mdec_4000)
+end

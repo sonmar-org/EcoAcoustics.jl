@@ -350,6 +350,11 @@ Arguments:
   `:blackman`, `:rectangular`. Forwarded to [`compute_psd`](@ref).
 - `nfft::Union{Int,Nothing} = nothing`: FFT length. `nothing` uses
   `window_length` (no zero-padding). Forwarded to [`compute_psd`](@ref).
+- `fft_plan = nothing`: Pre-built FFTW plan from [`make_spectrogram_plan`](@ref).
+  Forwarded through `compute_psd` → `spectrogram`. Pass a plan when
+  processing many chunks at the same sample rate and window size to avoid
+  repeated FFTW wisdom lookups. The plan's FFT length must match the
+  resolved `nfft`; a mismatch throws `AssertionError` (DD-04).
 
 Returns:     [`SPLResult`](@ref). All fields identical to calling
              `compute_spl(compute_psd(audio; ...), bands=bands, environment=environment)`.
@@ -383,7 +388,299 @@ function compute_spl(audio::Audiodata;
                      window_seconds::Real       = 1.0,
                      overlap_fraction::Real     = 0.5,
                      window::Symbol             = :hann,
-                     nfft::Union{Int, Nothing}  = nothing) :: SPLResult
-    psd = compute_psd(audio; window_seconds, overlap_fraction, window, nfft)
+                     nfft::Union{Int, Nothing}  = nothing,
+                     fft_plan                   = nothing) :: SPLResult
+    psd = compute_psd(audio; window_seconds, overlap_fraction, window, nfft, fft_plan)
     return compute_spl(psd; bands, environment)
+end
+
+# ─── compute_tol ──────────────────────────────────────────────────────────────
+
+"""
+    compute_tol(psd::PSDResult; low_Hz=10.0, high_Hz=fs/2, environment=:water) -> SPLResult
+    compute_tol(audio::Audiodata; low_Hz=10.0, high_Hz=fs/2,
+                environment=:water, window_seconds=1.0, overlap_fraction=0.5,
+                window=:hann, nfft=nothing, fft_plan=nothing) -> SPLResult
+
+Purpose:     Compute band-integrated SPL in ANSI S1.11 third-octave (decidecade)
+             bands. Generates the band set via [`tol_bands`](@ref), then delegates
+             to [`compute_spl`](@ref). The `PSDResult` method requires a
+             pre-computed PSD; the `Audiodata` method computes the PSD internally.
+             [`compute_decidecade`](@ref) is an alias for this function.
+
+Arguments:
+- `psd::PSDResult` or `audio::Audiodata`: Input data.
+- `low_Hz::Real = 10.0`: Lower frequency bound. Bands with ANSI preferred
+  center < `low_Hz` are excluded. Default 10 Hz matches the broadband floor
+  in [`compute_spl`](@ref) and the typical hydrophone response limit.
+- `high_Hz::Real = fs/2`: Upper frequency bound (Nyquist of the recording).
+  Bands with ANSI preferred center > `high_Hz` are excluded. Defaults to
+  Nyquist to clip at the recording's frequency limit automatically.
+- `environment::Symbol = :water`: Reference pressure. `:water` → 1 µPa
+  (`:dB_re_1µPa`); `:air` → 20 µPa (`:dB_re_20µPa`).
+- `window_seconds`, `overlap_fraction`, `window`, `nfft`: Forwarded to
+  [`compute_psd`](@ref) (Audiodata method only; not available on PSDResult method).
+- `fft_plan`: Pre-built FFTW plan from [`make_spectrogram_plan`](@ref).
+  Forwarded through `compute_psd` → `spectrogram` (Audiodata method only).
+  Pass when processing many chunks at the same window size to avoid repeated
+  FFTW wisdom lookups. The plan length must match the resolved `nfft` (DD-04).
+  **Not available on the PSDResult method** — the FFT has already been computed.
+
+Returns:     [`SPLResult`](@ref) with one [`BandSPL`](@ref) per ANSI S1.11
+             band whose preferred center falls in `[low_Hz, high_Hz]`. Band
+             label keys match [`tol_bands`](@ref) output (`:tol_N`, `:tol_12_5`,
+             etc.). Returns a result with an empty `bands` Dict if no ANSI S1.11
+             preferred centers fall in `[low_Hz, high_Hz]`.
+
+Constraints:
+- Same calibration requirement as [`compute_spl`](@ref): `psd_units(psd)` must
+  be `:µPa²_per_Hz`. Uncalibrated input throws `AssertionError` (DD-21).
+- Band edges validated by [`compute_spl`](@ref): `high_Hz > Nyquist` throws
+  `ArgumentError`; `low_Hz < 10 Hz` triggers `@warn`.
+
+Fails when:  Same conditions as [`compute_spl`](@ref).
+
+Example:
+```julia
+psd    = compute_psd(audio; window_seconds = 1.0)
+result = compute_tol(psd)
+# Keys: :tol_10, :tol_12_5, :tol_16, ..., :tol_N (up to Nyquist)
+result.bands[:tol_1000].mean_dB   # energetic mean 1-kHz third-octave SPL
+
+# Or directly from Audiodata:
+result = compute_tol(audio; window_seconds = 1.0)
+```
+
+Do not use when:
+- Octave-band resolution suffices — use [`compute_octave`](@ref).
+- Sub-Hz resolution is needed — use [`compute_millidecade`](@ref).
+- Custom band boundaries are required — use [`compute_spl`](@ref) with an
+  explicit `bands` Dict.
+
+References:
+ANSI S1.11-2004 (R2009). Specification for Octave-Band and Fractional-Octave-Band
+Analog and Digital Filters. Acoustical Society of America.
+ISO 18405:2017. Underwater Acoustics — Terminology. International Organization
+for Standardization.
+"""
+function compute_tol(psd::PSDResult;
+                     low_Hz::Real        = 10.0,
+                     high_Hz::Real       = Float64(psd.fs) / 2.0,
+                     environment::Symbol = :water) :: SPLResult
+    return compute_spl(psd; bands = tol_bands(low_Hz, high_Hz), environment)
+end
+
+function compute_tol(audio::Audiodata;
+                     low_Hz::Real             = 10.0,
+                     high_Hz::Real            = Float64(audio.fs) / 2.0,
+                     environment::Symbol      = :water,
+                     window_seconds::Real     = 1.0,
+                     overlap_fraction::Real   = 0.5,
+                     window::Symbol           = :hann,
+                     nfft::Union{Int,Nothing} = nothing,
+                     fft_plan                 = nothing) :: SPLResult
+    psd = compute_psd(audio; window_seconds, overlap_fraction, window, nfft, fft_plan)
+    return compute_spl(psd; bands = tol_bands(low_Hz, high_Hz), environment)
+end
+
+# ─── compute_octave ───────────────────────────────────────────────────────────
+
+"""
+    compute_octave(psd::PSDResult; low_Hz=10.0, high_Hz=fs/2, environment=:water) -> SPLResult
+    compute_octave(audio::Audiodata; low_Hz=10.0, high_Hz=fs/2,
+                   environment=:water, window_seconds=1.0, overlap_fraction=0.5,
+                   window=:hann, nfft=nothing, fft_plan=nothing) -> SPLResult
+
+Purpose:     Compute band-integrated SPL in ANSI S1.6 octave bands. Generates
+             the band set via [`octave_bands`](@ref), then delegates to
+             [`compute_spl`](@ref). The `PSDResult` method requires a
+             pre-computed PSD; the `Audiodata` method computes the PSD internally.
+
+Arguments:
+- `psd::PSDResult` or `audio::Audiodata`: Input data.
+- `low_Hz::Real = 10.0`: Lower frequency bound. Bands with ANSI S1.6 preferred
+  center < `low_Hz` are excluded. Default 10 Hz matches the broadband floor.
+- `high_Hz::Real = fs/2`: Upper frequency bound (Nyquist). Bands with ANSI S1.6
+  preferred center > `high_Hz` are excluded.
+- `environment::Symbol = :water`: Reference pressure. `:water` → 1 µPa;
+  `:air` → 20 µPa.
+- `window_seconds`, `overlap_fraction`, `window`, `nfft`: Forwarded to
+  [`compute_psd`](@ref) (Audiodata method only).
+- `fft_plan`: Pre-built FFTW plan from [`make_spectrogram_plan`](@ref).
+  Forwarded through `compute_psd` → `spectrogram` (Audiodata method only).
+  **Not available on the PSDResult method** — the FFT has already been computed.
+
+Returns:     [`SPLResult`](@ref) with one [`BandSPL`](@ref) per ANSI S1.6
+             octave band whose preferred center falls in `[low_Hz, high_Hz]`.
+             Band label keys match [`octave_bands`](@ref) output (`:oct_16`,
+             `:oct_31_5`, `:oct_1000`, etc.).
+
+Constraints:
+- Same calibration requirement as [`compute_spl`](@ref): `psd_units(psd)`
+  must be `:µPa²_per_Hz` (DD-21).
+- `high_Hz` must not exceed Nyquist — passes through the band-edge validation
+  in `compute_spl`, which throws `ArgumentError` if any band edge exceeds
+  Nyquist.
+
+Fails when:  Same conditions as [`compute_spl`](@ref).
+
+Example:
+```julia
+psd    = compute_psd(audio; window_seconds = 1.0)
+result = compute_octave(psd)
+# Keys: :oct_16, :oct_31_5, :oct_63, ..., up to Nyquist
+result.bands[:oct_1000].mean_dB   # energetic mean 1-kHz octave-band SPL
+
+# Or directly from Audiodata:
+result = compute_octave(audio; window_seconds = 1.0)
+```
+
+Do not use when:
+- Third-octave or finer resolution is needed — use [`compute_tol`](@ref) or
+  [`compute_millidecade`](@ref).
+- Custom band boundaries are required — use [`compute_spl`](@ref) directly.
+
+References:
+ANSI S1.6-1984 (R2006). Preferred Frequencies, Frequency Levels, and Band
+Numbers for Acoustical Measurements. Acoustical Society of America.
+"""
+function compute_octave(psd::PSDResult;
+                        low_Hz::Real        = 10.0,
+                        high_Hz::Real       = Float64(psd.fs) / 2.0,
+                        environment::Symbol = :water) :: SPLResult
+    return compute_spl(psd; bands = octave_bands(low_Hz, high_Hz), environment)
+end
+
+function compute_octave(audio::Audiodata;
+                        low_Hz::Real             = 10.0,
+                        high_Hz::Real            = Float64(audio.fs) / 2.0,
+                        environment::Symbol      = :water,
+                        window_seconds::Real     = 1.0,
+                        overlap_fraction::Real   = 0.5,
+                        window::Symbol           = :hann,
+                        nfft::Union{Int,Nothing} = nothing,
+                        fft_plan                 = nothing) :: SPLResult
+    psd = compute_psd(audio; window_seconds, overlap_fraction, window, nfft, fft_plan)
+    return compute_spl(psd; bands = octave_bands(low_Hz, high_Hz), environment)
+end
+
+# ─── compute_decidecade ───────────────────────────────────────────────────────
+
+"""
+    compute_decidecade(psd::PSDResult; kwargs...) -> SPLResult
+    compute_decidecade(audio::Audiodata; kwargs...) -> SPLResult
+
+Purpose:     Alias for [`compute_tol`](@ref). "Decidecade" (ISO 18405:2017) is
+             the post-2018 underwater acoustics term for the same band scheme that
+             ANSI S1.11 calls "third-octave". Output is identical to `compute_tol`
+             with the same arguments.
+
+Arguments:   Same as [`compute_tol`](@ref).
+Returns:     Same as [`compute_tol`](@ref).
+Constraints: Same as [`compute_tol`](@ref).
+Fails when:  Same as [`compute_tol`](@ref).
+
+Example:
+```julia
+compute_decidecade(psd) == compute_tol(psd)   # true (same band scheme)
+```
+"""
+compute_decidecade(psd::PSDResult;   kw...) = compute_tol(psd;   kw...)
+compute_decidecade(audio::Audiodata; kw...) = compute_tol(audio; kw...)
+
+# ─── compute_millidecade ──────────────────────────────────────────────────────
+
+"""
+    compute_millidecade(psd::PSDResult; low_Hz=10.0, high_Hz=fs/2, environment=:water) -> SPLResult
+    compute_millidecade(audio::Audiodata; low_Hz=10.0, high_Hz=fs/2,
+                        environment=:water, window_seconds=1.0, overlap_fraction=0.5,
+                        window=:hann, nfft=nothing, fft_plan=nothing) -> SPLResult
+
+Purpose:     Compute band-integrated SPL in millidecade bands. Generates the
+             band set via [`millidecade_bands`](@ref), then delegates to
+             [`compute_spl`](@ref). The `PSDResult` method requires a pre-computed
+             PSD; the `Audiodata` method computes the PSD internally.
+
+             Millidecade bands are very fine resolution: near 1 kHz, each band
+             spans roughly 2.3 Hz, producing ~87 bands in the 900–1100 Hz range
+             versus 1 third-octave band. This resolution is the standard for
+             NOAA NRS and MANTA long-term soundscape monitoring. For broadband
+             surveys or comparisons with PAMGuide / Triton output, use
+             [`compute_tol`](@ref) instead.
+
+Arguments:
+- `psd::PSDResult` or `audio::Audiodata`: Input data.
+- `low_Hz::Real = 10.0`: Lower frequency bound. Must be > 0 (required by
+  `millidecade_bands` for `log10`). Bands with center < `low_Hz` are excluded.
+- `high_Hz::Real = fs/2`: Upper frequency bound (Nyquist). Bands with center
+  > `high_Hz` are excluded.
+- `environment::Symbol = :water`: Reference pressure. `:water` → 1 µPa;
+  `:air` → 20 µPa.
+- `window_seconds`, `overlap_fraction`, `window`, `nfft`: Forwarded to
+  [`compute_psd`](@ref) (Audiodata method only).
+- `fft_plan`: Pre-built FFTW plan from [`make_spectrogram_plan`](@ref).
+  Forwarded through `compute_psd` → `spectrogram` (Audiodata method only).
+  **Not available on the PSDResult method** — the FFT has already been computed.
+
+Returns:     [`SPLResult`](@ref) with one [`BandSPL`](@ref) per millidecade
+             band whose center falls in `[low_Hz, high_Hz]`. Band label keys
+             match [`millidecade_bands`](@ref) output (`:mdec_N` where N is
+             the integer index such that `f_c = 10^(N/1000)`). The number of
+             bands scales with the frequency range: ~230 bands per decade, so
+             a [10 Hz, 24 kHz] range yields ~3400 bands.
+
+Constraints:
+- Same calibration requirement as [`compute_spl`](@ref): `psd_units(psd)`
+  must be `:µPa²_per_Hz` (DD-21).
+- `low_Hz` must be > 0; `millidecade_bands` throws `ArgumentError` otherwise.
+- For MANTA-compatible output, use the default `:mdec_N` label convention
+  — do not rename band keys.
+
+Fails when:
+- Same conditions as [`compute_spl`](@ref).
+- `low_Hz ≤ 0` → `ArgumentError` from [`millidecade_bands`](@ref).
+
+Example:
+```julia
+psd    = compute_psd(audio; window_seconds = 1.0)
+result = compute_millidecade(psd)
+# Keys: :mdec_N for each millidecade band in [10 Hz, Nyquist]
+result.bands[:mdec_3000].mean_dB   # energetic mean 1-kHz millidecade SPL
+
+# Or directly from Audiodata:
+result = compute_millidecade(audio; window_seconds = 1.0)
+```
+
+Do not use when:
+- Third-octave resolution suffices — `compute_millidecade` produces ~14×
+  more bands per decade than `compute_tol` and proportionally more output to
+  store and process.
+- Comparing against tools that use ANSI preferred-center third-octave bands —
+  millidecade band edges do not align with ANSI S1.11 preferred centers.
+
+References:
+Miksis-Olds, J.L., et al. (2021). Ocean sound analysis software for making
+ambient noise trends accessible (MANTA). Frontiers in Marine Science, 8.
+Hatch, L.T., et al. (2016). Quantifying loss of acoustic communication space
+for right whales in and around a U.S. national marine sanctuary. Conservation
+Biology, 26(6), 983–994.
+"""
+function compute_millidecade(psd::PSDResult;
+                              low_Hz::Real        = 10.0,
+                              high_Hz::Real       = Float64(psd.fs) / 2.0,
+                              environment::Symbol = :water) :: SPLResult
+    return compute_spl(psd; bands = millidecade_bands(low_Hz, high_Hz), environment)
+end
+
+function compute_millidecade(audio::Audiodata;
+                              low_Hz::Real             = 10.0,
+                              high_Hz::Real            = Float64(audio.fs) / 2.0,
+                              environment::Symbol      = :water,
+                              window_seconds::Real     = 1.0,
+                              overlap_fraction::Real   = 0.5,
+                              window::Symbol           = :hann,
+                              nfft::Union{Int,Nothing} = nothing,
+                              fft_plan                 = nothing) :: SPLResult
+    psd = compute_psd(audio; window_seconds, overlap_fraction, window, nfft, fft_plan)
+    return compute_spl(psd; bands = millidecade_bands(low_Hz, high_Hz), environment)
 end
