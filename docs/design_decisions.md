@@ -389,3 +389,168 @@ that prompted the code review finding arose from an earlier version where
 strict-mode throw); `read_audio` in `src/audio/read_audio.jl` (docstring `strict`
 argument description). The `strict` kwarg is passed from `read_audio` into
 `lookup_calibration` and `parse_filename` at the call sites inside `read_audio`.
+
+---
+
+## Session: SPL layer (task 10)
+
+### DD-18 — BandSPL struct stores per-frame series and six aggregate statistics
+
+**Decided:** `BandSPL` holds `spl_dB::Vector{Float64}` (one value per PSD time
+frame) plus `mean_dB`, `median_dB`, `L1_dB`, `L5_dB`, `L95_dB`, `L99_dB` as
+pre-computed `Float64` scalars. Aggregates are computed once at construction and
+stored on the struct; they are not recomputed on access.
+
+**Why:** The primary use pattern is: run `compute_spl` over an archive, then
+query the statistics for visualization, reporting, or thresholding. If aggregates
+were properties that recomputed on every access, archive-scale use would recompute
+`quantile` millions of times. Storing them on the struct costs six Float64 (48
+bytes) per band per analysis window — negligible compared to the per-frame vector.
+
+The six statistics were chosen to cover the full distribution shape: the energetic
+mean (physically correct average), median (robust central tendency), L1/L99
+(extreme values for noise floor and peak transients), and L5/L95 (softer
+low/high indicators). This matches the statistics reported in Merchant 2015 fig. 4
+and common OSPAR / EU Marine Strategy Framework Directive monitoring protocols.
+
+**Where:** `struct BandSPL` in `src/soundscape/spl.jl`.
+
+---
+
+### DD-19 — Default broadband band [10 Hz, Nyquist]; band validation throws on edge, warns on sub-10-Hz
+
+**Decided:** When `compute_spl(psd)` is called with no `bands` argument, a single
+broadband band `(:broadband => (10.0, fs/2))` is used. Band validation rules:
+
+- `high_Hz > Nyquist` → `ArgumentError` (listing all offending labels)
+- `low_Hz ≥ high_Hz` → `ArgumentError` (listing all offending labels)
+- `low_Hz < 10 Hz` → `@warn` (listing all offending labels; computation proceeds)
+- No PSD bins in band → `ArgumentError` (naming the band)
+
+**Why:** The 10 Hz floor is the typical lower limit of calibrated hydrophone
+response. Sub-10-Hz integration is not prohibited — infrasound and low-frequency
+baleen whale work legitimately require it — but it warrants a warning because it
+is almost always unintentional. Throwing on `high_Hz > Nyquist` is correct:
+integrating above Nyquist is undefined and would silently include wrap-around
+aliasing energy.
+
+Collecting all offending labels before throwing (rather than stopping at the
+first failure) is a usability choice: large band Dicts from band generators may
+have multiple problems simultaneously, and iterative fix-run-fail cycles are
+unnecessarily slow.
+
+**Where:** Band validation block in `compute_spl(psd::PSDResult; ...)` in
+`src/soundscape/spl.jl`. Tested in `test/test_spl.jl`.
+
+---
+
+### DD-20 — Band generators use ANSI preferred centers; decidecade is an alias for tol
+
+**Decided:**
+1. `octave_bands` and `tol_bands` use the tabulated ANSI preferred center
+   frequencies (`OCTAVE_PREFERRED_HZ`, `TOL_PREFERRED_HZ`), not the values
+   computed from the exact formula (`1000 × 2^(n−10)`, `1000 × 2^((n−30)/3)`).
+2. `decidecade_bands` is a one-line alias for `tol_bands`. Its output is
+   identical in every respect.
+
+**Why (preferred centers):** The ANSI preferred values intentionally differ
+from exact formula values at non-power-of-two centers (31.5 vs 31.25, 63 vs
+62.5, 3.15 vs 3.155). PAMGuide, PAMGuard, MANTA, and Merchant 2015 all use the
+preferred values. Using formula values would cause frequency-axis label mismatches
+when comparing output against those tools, requiring a manual mapping step for
+any cross-tool validation.
+
+**Why (decidecade alias):** "Third-octave" (ANSI S1.11) and "decidecade"
+(ISO 18405:2017) refer to the same 1/3-decade band scheme — the numerical
+equivalence `log10(2^(1/3)) ≈ 0.1003` makes them functionally identical. The
+term "decidecade" entered the underwater acoustics literature around 2018 and
+is now preferred in that community. Providing both names under one
+implementation avoids the maintenance burden of keeping two independent band
+tables synchronized.
+
+**Where:** `src/soundscape/bands.jl`. Documented in
+`docs/src/explanations/spl_bands.md`.
+
+---
+
+### DD-21 — `compute_spl` asserts `psd_units(psd) === :µPa²_per_Hz` before integration
+
+**Decided:** `compute_spl(psd::PSDResult; ...)` begins with:
+
+```julia
+@assert psd_units(psd) === :µPa²_per_Hz "compute_spl requires a calibrated PSD..."
+```
+
+An uncalibrated PSD results in `AssertionError`, not a silent wrong result.
+
+**Why:** An uncalibrated PSD is in full-scale²/Hz. Integrating it and reporting
+the result as "dB re 1 µPa" is physically meaningless — the number has no
+acoustic interpretation. The failure is a programming error (forgot to calibrate),
+not a user input error (bad argument at runtime). `@assert` communicates this
+distinction: it is the correct Julia idiom for precondition violations rather
+than runtime argument errors. The message points directly to the fix.
+
+**Why not `ArgumentError`:** `ArgumentError` implies the caller passed a bad
+value through the public API. An uncalibrated PSD is not a bad value; it is a
+misconfigured pipeline. The semantic distinction matters for error handling:
+production code that catches `ArgumentError` for band validation should not
+accidentally swallow a precondition violation of this kind.
+
+**Where:** First executable statement of `compute_spl(psd::PSDResult; ...)` in
+`src/soundscape/spl.jl`. Tested in `test/test_spl.jl`
+("compute_spl: uncalibrated PSD raises AssertionError").
+
+---
+
+### DD-22 — Energetic mean: average in linear power, then convert to dB
+
+**Decided:** `BandSPL.mean_dB` is:
+
+```julia
+mean_dB = 10.0 * log10(mean(10.0 .^ (spl_dB ./ 10.0)))
+```
+
+not `mean(spl_dB)`.
+
+**Why:** This is identical in motivation to DD-16 (which makes the same choice
+for `average_psd`). For SPL: `mean(10·log10.(P)) ≠ 10·log10(mean(P))` unless
+all frame powers are equal. The energetic mean is the physically correct average
+— it is the constant level that would produce the same total acoustic energy as
+the time-varying signal. For a 10-minute recording with 9.5 min of 90 dB ambient
+noise and 30 s of a 120 dB ship passage, the arithmetic mean of dB gives ~90 dB;
+the energetic mean gives ~102 dB. The energetic mean correctly captures the
+ship's dominant contribution to the acoustic environment.
+
+**Where:** `mean_dB` computation in the per-band integration loop in
+`compute_spl(psd::PSDResult; ...)` in `src/soundscape/spl.jl`. The choice is
+documented in the `BandSPL` docstring under "Energetic mean".
+
+---
+
+### DD-23 — `fft_plan` forwarded through `compute_spl(audio)` → `compute_psd` → `spectrogram`
+
+**Decided:** All `Audiodata`-accepting SPL methods (`compute_spl`,
+`compute_tol`, `compute_octave`, `compute_decidecade`, `compute_millidecade`)
+accept `fft_plan = nothing` and forward it through `compute_psd` to
+`spectrogram` without modification.
+
+**Why:** Archive-scale SPL computation (e.g., hourly TOL bands over a year of
+data) processes thousands of chunks at the same sample rate and window length.
+Without plan reuse, `spectrogram` reconstructs an FFTW plan on every chunk via
+wisdom lookup — this is fast per-call but measurable at scale. Building the plan
+once with `make_spectrogram_plan` and forwarding it eliminates the per-chunk
+overhead entirely.
+
+The forwarding is a one-line add at each layer (`fft_plan = nothing` in the
+kwarg list; `fft_plan` passed through to the next call). The alternative —
+building the plan inside `compute_spl` from the inferred `nfft` — would require
+`compute_spl` to know the FFT length before calling `compute_psd`, which
+couples the two layers incorrectly.
+
+**Plan size mismatch:** If the caller passes a plan built for a different FFT
+length, DD-04's assertion in `spectrogram` fires with a clear error message.
+This is tested via the plan-size-mismatch path in `test/test_spl.jl`.
+
+**Where:** `fft_plan` kwarg in `compute_spl(audio::Audiodata; ...)` and all
+four convenience wrappers in `src/soundscape/spl.jl`; forwarded into
+`compute_psd(audio::Audiodata; fft_plan)` in `src/soundscape/psd.jl`.

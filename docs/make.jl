@@ -22,6 +22,8 @@ makedocs(;
             "Calibration"  => "explanations/calibration.md",
             "Spectrogram"  => "explanations/spectrogram.md",
             "PSD"          => "explanations/psd.md",
+            "SPL"          => "explanations/spl.md",
+            "SPL bands"    => "explanations/spl_bands.md",
             "Glossary"     => "explanations/glossary.md",
         ],
     ],
