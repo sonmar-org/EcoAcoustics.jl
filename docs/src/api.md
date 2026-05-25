@@ -2,5 +2,5 @@
 
 ```@autodocs
 Modules = [EcoAcoustics]
-Order = [:function, :type]
+Private = false
 ```

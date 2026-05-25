@@ -42,8 +42,3 @@ be converted to FLAC with `sox` before indexing.
 
 ```@index
 ```
-
-```@autodocs
-Modules = [EcoAcoustics]
-Private = false
-```

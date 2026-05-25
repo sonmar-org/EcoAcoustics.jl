@@ -29,7 +29,7 @@ export read_audio
 export AbstractAudioSource, SingleFileSource, IndexedFileSource
 export time_range, read_audio_range, coverage_fraction
 export build_index, load_index
-export chunks, process_chunks
+export chunks, ChunksIterator, process_chunks
 
 export SpectrogramResult, spectrogram, make_spectrogram_plan
 export PSDResult, compute_psd, psd_units, average_psd, to_dB
