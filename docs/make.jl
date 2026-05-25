@@ -26,6 +26,7 @@ makedocs(;
             "SPL bands"    => "explanations/spl_bands.md",
             "Glossary"     => "explanations/glossary.md",
         ],
+        "API Reference" => "api.md"
     ],
 )
 
