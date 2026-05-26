@@ -50,6 +50,7 @@ include("recorders/rockhopper.jl")
 include("recorders/sm3m.jl")
 include("recorders/ls1x.jl")
 include("recorders/snap.jl")
+include("recorders/dmon2.jl")
 
 include("audio/parse_filename.jl")
 include("audio/read_audio.jl")
