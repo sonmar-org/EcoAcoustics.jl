@@ -10,6 +10,13 @@ using DelimitedFiles
 # two DMON2 recordings (2 kHz, full spectrum 0–1000 Hz) and one synthetic
 # white-noise file (48 kHz; PAMGuide CSV covers 10–1000 Hz subset).
 #
+# Normalization reference: ADEON DPS §2.2.1 (Ainslie et al. 2018). The DPS
+# formula uses a pre-normalised Hann window (sqrt(8/3) factor); this is
+# algebraically identical to the Merchant 2015 Eq.(1) convention used here.
+# PAMGuide implements the same convention and serves as the independent check.
+# See DD-24 for the 30 Hz lower-frequency cut and docs/design_decisions.md for
+# the full normalization equivalence argument.
+#
 # Required files in test/validation/pamguide/ (not version-controlled):
 #   230306_152540_VesselPassage_dmon2.wav
 #   230306_201311_CallingPeriod_dmon2.wav

@@ -158,6 +158,15 @@ Do not use when:
 References:
 Merchant et al. (2015) Measuring Acoustic Habitats. Methods in Ecology and
 Evolution, 6, 257–265.
+
+Ainslie MA, Miksis-Olds JL, Martin B, Heaney K, de Jong CAF, von
+Benda-Beckmann AM, Lyons AP (2018) ADEON Underwater Soundscape and Modeling
+Metadata Standard. Soundscape Specification deliverable v1.0.
+Section 2.2.1 of the DPS defines the same normalisation using a
+pre-normalised Hann window (explicit sqrt(8/3) factor visible in the formula);
+that form is algebraically identical to the Merchant 2015 convention
+implemented here: both yield `psd[k] = 2|X[k]|² / (fs × Σwᵢ²)` for interior
+bins. Confirmed empirically: PAMGuide cross-validation Δmean < 0.02 dB.
 """
 # ─── Private calibration resolver ────────────────────────────────────────────
 #

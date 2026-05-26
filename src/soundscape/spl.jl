@@ -33,6 +33,14 @@ Fields
 - `L5_dB::Float64`:
     5th percentile of `spl_dB` — the level below which 5% of frames fall.
     Low-ambient indicator.
+- `L10_dB::Float64`:
+    10th percentile of `spl_dB`.
+- `L25_dB::Float64`:
+    25th percentile of `spl_dB` — first quartile.
+- `L75_dB::Float64`:
+    75th percentile of `spl_dB` — third quartile.
+- `L90_dB::Float64`:
+    90th percentile of `spl_dB` — high-activity indicator.
 - `L95_dB::Float64`:
     95th percentile of `spl_dB` — the level below which 95% of frames fall.
     High-transient indicator.
@@ -70,6 +78,10 @@ struct BandSPL
     median_dB::Float64
     L1_dB::Float64
     L5_dB::Float64
+    L10_dB::Float64
+    L25_dB::Float64
+    L75_dB::Float64
+    L90_dB::Float64
     L95_dB::Float64
     L99_dB::Float64
 end
@@ -113,9 +125,9 @@ Fails when:
 
 Example:
 ```julia
-result = compute_spl(psd; bands = Dict(:broadband => (10.0, 24000.0)))
-result.bands[:broadband].mean_dB    # energetic mean, dB re 1 µPa
-result.bands[:broadband].spl_dB     # per-frame time series
+result = compute_spl(psd; bands = Dict(:full => (10.0, 24000.0)))
+result.bands[:full].mean_dB    # energetic mean, dB re 1 µPa
+result.bands[:full].spl_dB     # per-frame time series
 result.time                         # frame-centre seconds from signal start
 ```
 """
@@ -148,7 +160,7 @@ end
 # ─── compute_spl primitive ────────────────────────────────────────────────────
 
 """
-    compute_spl(psd::PSDResult; bands=nothing, environment=:water) -> SPLResult
+    compute_spl(psd::PSDResult; bands, environment=:water) -> SPLResult
 
 Purpose:     Compute band-integrated sound pressure level from a calibrated
              [`PSDResult`](@ref). For each requested frequency band, integrates
@@ -168,11 +180,13 @@ Arguments:
   `psd_units(psd) === :µPa²_per_Hz`. Use [`compute_psd`](@ref) with
   an appropriate calibration, or call `compute_spl(audio::Audiodata; ...)`
   which resolves calibration automatically.
-- `bands::Union{Nothing, Dict{Symbol, Tuple{Float64,Float64}}} = nothing`:
+- `bands::Dict{Symbol, Tuple{Float64,Float64}}`:
   Frequency bands to integrate. Each entry maps a label `Symbol` to a
-  `(low_Hz, high_Hz)` tuple. When `nothing`, a single broadband band
-  from 10 Hz to Nyquist is used: `Dict(:broadband => (10.0, fs/2))`.
-  Overlapping bands are permitted; each is integrated independently.
+  `(low_Hz, high_Hz)` tuple in Hz. There is no default — bands must
+  always be supplied explicitly (DD-27). Overlapping bands are permitted;
+  each is integrated independently. For standard band sets use the
+  convenience wrappers: [`compute_tol`](@ref), [`compute_octave`](@ref),
+  [`compute_millidecade`](@ref).
 - `environment::Symbol = :water`:
   Acoustic medium. Determines the reference pressure:
   - `:water` → pref = 1 µPa, output units `:dB_re_1µPa`
@@ -203,10 +217,10 @@ Example:
 ```julia
 psd    = compute_psd(audio; window_seconds = 1.0)
 result = compute_spl(psd; bands = Dict(
-    :broadband => (10.0, 24000.0),
-    :tonal     => (18000.0, 22000.0)))
-result.bands[:broadband].mean_dB   # energetic mean broadband SPL, dB re 1 µPa
-result.bands[:tonal].L99_dB        # 99th-percentile tonal SPL
+    :full  => (10.0, Float64(psd.fs) / 2),
+    :tonal => (18000.0, 22000.0)))
+result.bands[:full].mean_dB    # energetic mean SPL, dB re 1 µPa
+result.bands[:tonal].L99_dB   # 99th-percentile tonal SPL
 ```
 
 Do not use when:
@@ -215,13 +229,22 @@ Do not use when:
 - Standard band sets (octave, third-octave, millidecade) are needed —
   use [`compute_octave`](@ref), [`compute_tol`](@ref), or
   [`compute_millidecade`](@ref), which populate `bands` automatically.
+- *System-weighted* broadband SPL (ADEON DPS Figure 1, left path) is
+  required. This function implements the *frequency-flat* path only:
+  the full calibrated PSD is integrated over the band. System-weighted
+  SPL applies a single sensitivity value at a representative frequency
+  (typically 250 Hz) directly to the time-domain signal and is not
+  available in v1. For instruments with flat frequency response the two
+  paths agree; for instruments with frequency-dependent response
+  (e.g. Rockhopper TF calibration), the frequency-flat path is the
+  physically correct choice. See DD-26.
 
 References:
 Merchant et al. (2015) Measuring Acoustic Habitats. Methods in Ecology and
 Evolution, 6, 257–265.
 """
 function compute_spl(psd::PSDResult;
-                     bands::Union{Nothing, Dict{Symbol, Tuple{Float64, Float64}}} = nothing,
+                     bands::Dict{Symbol, Tuple{Float64, Float64}},
                      environment::Symbol = :water) :: SPLResult
 
     # DD-21: assert calibration before any computation. Uncalibrated PSDs are
@@ -232,10 +255,7 @@ function compute_spl(psd::PSDResult;
         "Call compute_psd with a calibration, or use " *
         "compute_spl(audio::Audiodata; ...) which resolves calibration automatically.")
 
-    # Default band: broadband from 10 Hz to Nyquist (DD-19).
     nyquist = Float64(psd.fs) / 2.0
-    resolved_bands = bands === nothing ?
-        Dict{Symbol, Tuple{Float64, Float64}}(:broadband => (10.0, nyquist)) : bands
 
     # ── Band validation (DD-19) ───────────────────────────────────────────────
     # Collect all offending labels before throwing, so the user sees every
@@ -244,7 +264,7 @@ function compute_spl(psd::PSDResult;
     above_nyquist = Symbol[]
     below_10hz    = Symbol[]
 
-    for (label, (f_lo, f_hi)) in resolved_bands
+    for (label, (f_lo, f_hi)) in bands
         f_lo >= f_hi   && push!(invalid_order, label)
         f_hi > nyquist && push!(above_nyquist, label)
         f_lo < 10.0    && push!(below_10hz, label)
@@ -277,7 +297,7 @@ function compute_spl(psd::PSDResult;
 
     # ── Per-band integration ──────────────────────────────────────────────────
     result_bands = Dict{Symbol, BandSPL}()
-    for (label, (f_lo, f_hi)) in resolved_bands
+    for (label, (f_lo, f_hi)) in bands
         # First bin with centre ≥ f_lo; last bin with centre ≤ f_hi.
         i_lo = searchsortedfirst(psd.freqs, f_lo)
         i_hi = searchsortedlast(psd.freqs, f_hi)
@@ -299,17 +319,22 @@ function compute_spl(psd::PSDResult;
         # (DD-16); the energetic mean is physically correct.
         mean_dB = 10.0 * log10(mean(10.0 .^ (spl_dB ./ 10.0)))
 
-        # All five percentiles in a single quantile() call.
-        # qs[1]=L1, qs[2]=L5, qs[3]=median(L50), qs[4]=L95, qs[5]=L99.
-        qs = quantile(spl_dB, [0.01, 0.05, 0.50, 0.95, 0.99])
+        # Nine percentiles in a single quantile() call, matching DPS Table C-1.
+        # qs[1]=L1, qs[2]=L5, qs[3]=L10, qs[4]=L25, qs[5]=L50(median),
+        # qs[6]=L75, qs[7]=L90, qs[8]=L95, qs[9]=L99.
+        qs = quantile(spl_dB, [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99])
 
         result_bands[label] = BandSPL(
             (f_lo, f_hi), spl_dB, mean_dB,
-            qs[3],   # median_dB
+            qs[5],   # median_dB  (L50)
             qs[1],   # L1_dB
             qs[2],   # L5_dB
-            qs[4],   # L95_dB
-            qs[5])   # L99_dB
+            qs[3],   # L10_dB
+            qs[4],   # L25_dB
+            qs[6],   # L75_dB
+            qs[7],   # L90_dB
+            qs[8],   # L95_dB
+            qs[9])   # L99_dB
     end
 
     units = environment === :water ? :dB_re_1µPa : :dB_re_20µPa
@@ -319,7 +344,7 @@ end
 # ─── Convenience wrapper: Audiodata ──────────────────────────────────────────
 
 """
-    compute_spl(audio::Audiodata; bands=nothing, environment=:water,
+    compute_spl(audio::Audiodata; bands, environment=:water,
                 window_seconds=1.0, overlap_fraction=0.5,
                 window=:hann, nfft=nothing) -> SPLResult
 
@@ -340,8 +365,8 @@ Purpose:     Convenience wrapper: compute band-integrated SPL directly from
 
 Arguments:
 - `audio::Audiodata`: Recording to analyse.
-- `bands`, `environment`: Forwarded to `compute_spl(psd; ...)`. See that method
-  for semantics and defaults.
+- `bands`: Forwarded to `compute_spl(psd; ...)`. Required — see that method
+  for semantics (DD-27).
 - `window_seconds::Real = 1.0`: Analysis window duration. Forwarded to
   [`compute_psd`](@ref) → [`spectrogram`](@ref).
 - `overlap_fraction::Real = 0.5`: Frame overlap fraction. Forwarded to
@@ -372,8 +397,10 @@ Fails when:  Same conditions as `compute_spl(psd::PSDResult; ...)` plus any
 Example:
 ```julia
 audio = read_audio("recording.flac"; recorder = "rockhopper")
-result = compute_spl(audio; window_seconds = 1.0)   # auto-calibrates
-result.bands[:broadband].mean_dB   # energetic mean broadband SPL, dB re 1 µPa
+result = compute_spl(audio;
+                     window_seconds = 1.0,
+                     bands = Dict(:full => (10.0, Float64(audio.fs) / 2)))
+result.bands[:full].mean_dB   # energetic mean SPL, dB re 1 µPa
 ```
 
 Do not use when:
@@ -383,7 +410,7 @@ Do not use when:
   the `PSDResult` explicitly, inspect it, then call the primitive.
 """
 function compute_spl(audio::Audiodata;
-                     bands::Union{Nothing, Dict{Symbol, Tuple{Float64, Float64}}} = nothing,
+                     bands::Dict{Symbol, Tuple{Float64, Float64}},
                      environment::Symbol        = :water,
                      window_seconds::Real       = 1.0,
                      overlap_fraction::Real     = 0.5,
@@ -411,8 +438,8 @@ Purpose:     Compute band-integrated SPL in ANSI S1.11 third-octave (decidecade)
 Arguments:
 - `psd::PSDResult` or `audio::Audiodata`: Input data.
 - `low_Hz::Real = 10.0`: Lower frequency bound. Bands with ANSI preferred
-  center < `low_Hz` are excluded. Default 10 Hz matches the broadband floor
-  in [`compute_spl`](@ref) and the typical hydrophone response limit.
+  center < `low_Hz` are excluded. Default 10 Hz matches the typical lower
+  limit of hydrophone response.
 - `high_Hz::Real = fs/2`: Upper frequency bound (Nyquist of the recording).
   Bands with ANSI preferred center > `high_Hz` are excluded. Defaults to
   Nyquist to clip at the recording's frequency limit automatically.
@@ -499,7 +526,8 @@ Purpose:     Compute band-integrated SPL in ANSI S1.6 octave bands. Generates
 Arguments:
 - `psd::PSDResult` or `audio::Audiodata`: Input data.
 - `low_Hz::Real = 10.0`: Lower frequency bound. Bands with ANSI S1.6 preferred
-  center < `low_Hz` are excluded. Default 10 Hz matches the broadband floor.
+  center < `low_Hz` are excluded. Default 10 Hz matches the typical lower
+  limit of hydrophone response.
 - `high_Hz::Real = fs/2`: Upper frequency bound (Nyquist). Bands with ANSI S1.6
   preferred center > `high_Hz` are excluded.
 - `environment::Symbol = :water`: Reference pressure. `:water` → 1 µPa;

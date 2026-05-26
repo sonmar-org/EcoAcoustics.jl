@@ -397,30 +397,32 @@ argument description). The `strict` kwarg is passed from `read_audio` into
 ### DD-18 — BandSPL struct stores per-frame series and six aggregate statistics
 
 **Decided:** `BandSPL` holds `spl_dB::Vector{Float64}` (one value per PSD time
-frame) plus `mean_dB`, `median_dB`, `L1_dB`, `L5_dB`, `L95_dB`, `L99_dB` as
-pre-computed `Float64` scalars. Aggregates are computed once at construction and
-stored on the struct; they are not recomputed on access.
+frame) plus ten pre-computed `Float64` aggregate scalars: `mean_dB`, `median_dB`,
+`L1_dB`, `L5_dB`, `L10_dB`, `L25_dB`, `L75_dB`, `L90_dB`, `L95_dB`, `L99_dB`.
+Aggregates are computed once at construction and stored on the struct; they are
+not recomputed on access.
 
 **Why:** The primary use pattern is: run `compute_spl` over an archive, then
 query the statistics for visualization, reporting, or thresholding. If aggregates
 were properties that recomputed on every access, archive-scale use would recompute
-`quantile` millions of times. Storing them on the struct costs six Float64 (48
+`quantile` millions of times. Storing them on the struct costs ten Float64 (80
 bytes) per band per analysis window — negligible compared to the per-frame vector.
 
-The six statistics were chosen to cover the full distribution shape: the energetic
-mean (physically correct average), median (robust central tendency), L1/L99
-(extreme values for noise floor and peak transients), and L5/L95 (softer
-low/high indicators). This matches the statistics reported in Merchant 2015 fig. 4
-and common OSPAR / EU Marine Strategy Framework Directive monitoring protocols.
+The ten statistics match the distribution shape reported in Merchant 2015 fig. 4
+and the full percentile set specified in ADEON DPS Table C-1 (Ainslie et al. 2018):
+L1/L99 (extreme values), L5/L95 (outer indicators), L10/L90 (inner indicators),
+L25/L75 (quartiles), median (robust central tendency), and the energetic mean
+(physically correct average). OSPAR and EU Marine Strategy Framework Directive
+monitoring protocols typically report a subset of these.
 
 **Where:** `struct BandSPL` in `src/soundscape/spl.jl`.
 
 ---
 
-### DD-19 — Default broadband band [10 Hz, Nyquist]; band validation throws on edge, warns on sub-10-Hz
+### DD-19 — Band validation rules: throws on Nyquist breach, warns on sub-10-Hz
 
-**Decided:** When `compute_spl(psd)` is called with no `bands` argument, a single
-broadband band `(:broadband => (10.0, fs/2))` is used. Band validation rules:
+**Decided:** `compute_spl` validates every entry in the caller-supplied `bands`
+Dict before integration. Rules:
 
 - `high_Hz > Nyquist` → `ArgumentError` (listing all offending labels)
 - `low_Hz ≥ high_Hz` → `ArgumentError` (listing all offending labels)
@@ -619,3 +621,126 @@ requirement.
 **Where:** `freq_lo` kwarg in `_compare_psd` in
 `test/test_psd_pamguide_validation.jl`; documented in
 `test/validation/pamguide/README.md`.
+
+---
+
+## Session: ADEON DPS alignment
+
+### DD-25 — Partial-bin edge interpolation not implemented; hard bin boundaries used
+
+**Decided:** `compute_spl` selects integration bins via
+`searchsortedfirst(psd.freqs, f_lo)` and `searchsortedlast(psd.freqs, f_hi)`.
+A bin is either fully included (its centre frequency falls within the band) or
+fully excluded. No fractional power contribution is applied to bins that
+straddle a band edge.
+
+**The DPS requirement:** ADEON DPS §2.2.2 (Ainslie et al. 2018) explicitly
+describes partial-bin interpolation for decidecade bands: a PSD bin straddling
+a band edge contributes only the fraction of its 1-Hz width that falls within
+the band. EA does not implement this.
+
+**Why the error is bounded:** With a 1-second analysis window at any integer
+sample rate, the frequency resolution is exactly 1 Hz and bin centres are at
+integer Hz values (0, 1, 2, ..., fs/2). Decidecade band edges computed from
+ANSI S1.11 preferred centres via `f_c × 2^(±1/6)` are irrational. No bin
+centre coincides with a band edge. The missing partial-bin power equals the
+single straddled bin's power times the fractional shortfall at each edge
+(at most one bin per edge, at most one bin's worth of power). For broadband
+integration (hundreds of bins) this is < 0.005 dB. For narrow decidecade bands
+above 100 Hz (≥ 10 bins) the bias is < 0.05 dB — within the SPL validation
+tolerance. At very low frequencies where decidecade bands span only 2–4 bins
+(e.g. the 10 Hz band at 2 kHz), the fractional error can reach ~0.1 dB.
+
+**Why not implemented in v1:**
+1. PAMGuide cross-validation passes within ±0.05 dB without it, confirming
+   the deviation is below the practical validation tolerance for real recordings.
+2. The implementation requires sub-Hz interpolation logic at each band edge —
+   non-trivial and has no other use in v1.
+3. Partial-bin interpolation makes a difference only when comparing against
+   software that implements it (not PAMGuide, which also uses hard boundaries).
+
+**If sub-Hz-accurate decidecade SPL is required** (regulatory reporting against
+a reference tool that implements interpolation), this decision should be
+revisited.
+
+**Where:** Integration loop in `compute_spl(psd::PSDResult; ...)` in
+`src/soundscape/spl.jl`.
+
+---
+
+### DD-26 — System-weighted broadband SPL not implemented; frequency-flat path only
+
+**Decided:** `compute_spl` implements the *frequency-flat* broadband SPL path
+only: integrate the calibrated PSD over the band, `L_p = 10 × log₁₀(Σ P(f)Δf)`.
+It does not implement the *system-weighted* path defined in ADEON DPS Figure 1
+(Ainslie et al. 2018).
+
+**What system-weighted broadband SPL is:** ADEON DPS Figure 1 shows two parallel
+paths. The right (frequency-flat) path is what EA implements. The left
+(system-weighted) path applies a single representative sensitivity at a fixed
+reference frequency (typically 250 Hz) to the time-domain signal and takes RMS.
+The system-weighted approach is common in instruments where a single scalar
+sensitivity is the calibration product and frequency response is certified flat
+within the band.
+
+**Why frequency-flat is preferred:**
+1. Strictly more general: uses the full TF calibration when available, correctly
+   accounting for frequency-dependent sensitivity across the band.
+2. Decomposable: broadband SPL is exactly the energetic sum of all per-band
+   contributions. System-weighted broadband is not decomposable into decidecade
+   bands from the same pipeline.
+3. For instruments with flat frequency response (DMON2, SM3M), the two paths are
+   numerically identical.
+4. For instruments with significant frequency-dependent response (Rockhopper),
+   the PSD-integration path with TFCalibration is the physically correct choice.
+   A single-frequency sensitivity estimate would introduce a systematic bias that
+   grows with the slope of the TF curve.
+
+**Consequence for users:** EA's "broadband SPL" is always the frequency-flat
+value. Comparisons against tools that report system-weighted broadband SPL for
+instruments with non-flat TF curves will show a systematic offset. This is
+documented in the `compute_spl` "Do not use when" section and in the glossary.
+
+**Where:** `compute_spl` in `src/soundscape/spl.jl`; glossary entry in
+`docs/src/explanations/glossary.md`.
+
+---
+
+### DD-27 — No `bands=nothing` default; `bands` is a required keyword argument
+
+**Decided:** `compute_spl(psd; bands)` has no default for `bands`. Callers must
+always supply an explicit `Dict{Symbol, Tuple{Float64,Float64}}`. There is no
+function named "broadband SPL" and no hidden default that creates a broadband
+band.
+
+**Why:** A `bands=nothing` default that silently creates a `:broadband =>
+(10.0, Nyquist)` band is a hidden assumption. The lower edge (10 Hz) and the
+labelling (:broadband) are not derivable from the signal; they reflect a
+measurement intent that the caller must state. Hiding them:
+
+1. Makes the output key `:broadband` appear in results without any code-visible
+   evidence of where it comes from, breaking traceability.
+2. Tempts callers to treat "broadband" as a well-defined single number rather
+   than a band-limited integral over an explicitly chosen range. Different
+   deployments have different lower limits of hydrophone response; 10 Hz is
+   a reasonable default for many instruments but is wrong for others.
+3. Is inconsistent with `compute_tol`, `compute_octave`, and
+   `compute_millidecade`, which all require an explicit frequency range.
+
+Making `bands` required forces the caller to be explicit: `bands = Dict(:full =>
+(10.0, 24000.0))` is unambiguous, auditable, and reproducible.
+
+**What removed the default:** Task 7 in the ADEON DPS alignment session
+(2026-05). The `bands=nothing` guard and `resolved_bands` local variable were
+deleted; both `compute_spl` overloads now declare `bands` as a keyword with no
+default.
+
+**Consequence for existing callers:** Any call to `compute_spl(psd)` or
+`compute_spl(audio)` without `bands=...` now fails at method dispatch with
+`UndefKeywordError`. The fix is to add the explicit band dict. Convenience
+wrappers (`compute_tol`, `compute_octave`, `compute_decidecade`,
+`compute_millidecade`) are unaffected — they always pass an explicit `bands`
+derived from the band generator.
+
+**Where:** `compute_spl` signatures in `src/soundscape/spl.jl`. Validation tests
+updated in `test/test_spl.jl` and `test/test_spl_pamguide_validation.jl`.

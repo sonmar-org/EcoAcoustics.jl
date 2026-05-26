@@ -6,6 +6,10 @@ using DelimitedFiles
 
 # ─── PAMGuide SPL cross-validation ───────────────────────────────────────────
 #
+# Validates conformance with ADEON DPS §2.1.1 and §2.2.2
+# (Ainslie et al. 2018): broadband L_p,Δt and decidecade-band L_p,ddec,Δt
+# (frequency-flat path; system-weighted path not in scope — see DD-26).
+#
 # Compares EcoAcoustics.jl SPL output against two independent references:
 #
 #   DMON2 recordings — reference is derived by integrating the PAMGuide PSD
@@ -125,8 +129,8 @@ end
 # ─── VesselPassage WAV — broadband ───────────────────────────────────────────
 
 @testset "PAMGuide SPL: VesselPassage_dmon2.wav broadband" begin
-    spl    = compute_spl(psd_vp_wav)
-    actual = spl.bands[:broadband].mean_dB
+    spl    = compute_spl(psd_vp_wav; bands = Dict(:fullband => (10.0, Float64(psd_vp_wav.fs) / 2)))
+    actual = spl.bands[:fullband].mean_dB
     ref    = _pam_spl(_pam_vp_dB, _pam_vp_hz)
     @info "SPL [VesselPassage_dmon2.wav broadband] EA vs PAMGuide CSV" ea_dB=round(actual; digits=3) pam_csv_dB=round(ref; digits=3) Δ=round(abs(actual - ref); digits=3)
     @test abs(actual - ref) <= 0.05
@@ -138,8 +142,8 @@ end
 # correct normalization.
 
 @testset "PAMGuide SPL: VesselPassage_dmon2.flac broadband" begin
-    spl    = compute_spl(psd_vp_flac)
-    actual = spl.bands[:broadband].mean_dB
+    spl    = compute_spl(psd_vp_flac; bands = Dict(:fullband => (10.0, Float64(psd_vp_flac.fs) / 2)))
+    actual = spl.bands[:fullband].mean_dB
     ref    = _pam_spl(_pam_vp_dB, _pam_vp_hz)
     @info "SPL [VesselPassage_dmon2.flac broadband] EA vs PAMGuide CSV" ea_dB=round(actual; digits=3) pam_csv_dB=round(ref; digits=3) Δ=round(abs(actual - ref); digits=3)
     @test abs(actual - ref) <= 0.05
@@ -158,8 +162,8 @@ end
 # ─── CallingPeriod WAV — broadband ───────────────────────────────────────────
 
 @testset "PAMGuide SPL: CallingPeriod_dmon2.wav broadband" begin
-    spl    = compute_spl(psd_cp)
-    actual = spl.bands[:broadband].mean_dB
+    spl    = compute_spl(psd_cp; bands = Dict(:fullband => (10.0, Float64(psd_cp.fs) / 2)))
+    actual = spl.bands[:fullband].mean_dB
     ref    = _pam_spl(_pam_cp_dB, _pam_cp_hz)
     @info "SPL [CallingPeriod_dmon2.wav broadband] EA vs PAMGuide CSV" ea_dB=round(actual; digits=3) pam_csv_dB=round(ref; digits=3) Δ=round(abs(actual - ref); digits=3)
     @test abs(actual - ref) <= 0.05
@@ -174,8 +178,8 @@ end
 # integration and RMS should agree to within numerical noise (~0.01 dB).
 
 @testset "PAMGuide SPL: WhiteNoise_10s_48kHz_+-0.5.wav broadband" begin
-    spl    = compute_spl(psd_wn)
-    actual = spl.bands[:broadband].mean_dB
+    spl    = compute_spl(psd_wn; bands = Dict(:fullband => (10.0, Float64(psd_wn.fs) / 2)))
+    actual = spl.bands[:fullband].mean_dB
     S      = Float64(_SPL_TEST_CAL.system_sensitivity_dB)
     rms_ref = 20.0 * log10(sqrt(mean(audio_wn.sig .^ 2))) - S
     @info "SPL [WhiteNoise broadband] EA (PSD) vs time-domain RMS" psd_dB=round(actual; digits=3) rms_dB=round(rms_ref; digits=3) Δ=round(abs(actual - rms_ref); digits=3)

@@ -39,22 +39,6 @@ function _make_test_psd(;
                      NoCalibration(), is_calibrated)
 end
 
-# ─── Default broadband band ───────────────────────────────────────────────────
-
-@testset "compute_spl: default broadband band" begin
-    psd    = _make_test_psd()
-    result = compute_spl(psd)   # no bands argument → :broadband => (10.0, Nyquist)
-
-    @test haskey(result.bands, :broadband)
-    @test result.bands[:broadband].band == (10.0, Float64(psd.fs) / 2.0)
-
-    # SPLResult metadata propagated from PSDResult.
-    @test result.time === psd.time
-    @test result.fs   === psd.fs
-    @test result.units       === :dB_re_1µPa
-    @test result.environment === :water
-end
-
 # ─── Flat PSD at known level → analytical SPL ────────────────────────────────
 
 @testset "compute_spl: flat PSD, single band, known analytical value" begin
@@ -79,6 +63,12 @@ end
     @test b.mean_dB   ≈ expected_spl  atol=1e-10
     @test b.median_dB ≈ expected_spl  atol=1e-10
     @test b.L1_dB     ≈ expected_spl  atol=1e-10
+    @test b.L5_dB     ≈ expected_spl  atol=1e-10
+    @test b.L10_dB    ≈ expected_spl  atol=1e-10
+    @test b.L25_dB    ≈ expected_spl  atol=1e-10
+    @test b.L75_dB    ≈ expected_spl  atol=1e-10
+    @test b.L90_dB    ≈ expected_spl  atol=1e-10
+    @test b.L95_dB    ≈ expected_spl  atol=1e-10
     @test b.L99_dB    ≈ expected_spl  atol=1e-10
 
     # Band edges stored verbatim.
@@ -178,12 +168,14 @@ end
 @testset "compute_spl: uncalibrated PSD raises AssertionError (DD-21)" begin
     psd_uncal = _make_test_psd(; is_calibrated = false)
 
+    bands = Dict(:b => (100.0, 400.0))
+
     # Must throw AssertionError (not ArgumentError or MethodError).
-    @test_throws AssertionError compute_spl(psd_uncal)
+    @test_throws AssertionError compute_spl(psd_uncal; bands)
 
     # Message must mention :µPa²_per_Hz so the user knows what was expected.
     err = try
-        compute_spl(psd_uncal)
+        compute_spl(psd_uncal; bands)
         nothing
     catch e
         e
@@ -217,13 +209,14 @@ end
 # ─── units and environment fields ─────────────────────────────────────────────
 
 @testset "compute_spl: units and environment fields set correctly" begin
-    psd = _make_test_psd()
+    psd   = _make_test_psd()
+    bands = Dict(:b => (100.0, 400.0))
 
-    water = compute_spl(psd; environment = :water)
+    water = compute_spl(psd; bands, environment = :water)
     @test water.units       === :dB_re_1µPa
     @test water.environment === :water
 
-    air = compute_spl(psd; environment = :air)
+    air = compute_spl(psd; bands, environment = :air)
     @test air.units       === :dB_re_20µPa
     @test air.environment === :air
 end
@@ -270,12 +263,13 @@ end
     audio = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
                       recorder = "rockhopper")
 
-    result = compute_spl(audio; window_seconds = 0.1)
+    result = compute_spl(audio;
+                         window_seconds = 0.1,
+                         bands = Dict(:full => (10.0, Float64(fs) / 2.0)))
 
     @test result.units === :dB_re_1µPa
     @test result.environment === :water
-    # Default broadband band spans 10 Hz to Nyquist.
-    @test result.bands[:broadband].band == (10.0, Float64(fs) / 2.0)
+    @test result.bands[:full].band == (10.0, Float64(fs) / 2.0)
 end
 
 @testset "compute_spl(Audiodata): custom bands forwarded correctly" begin
@@ -291,8 +285,6 @@ end
     @test haskey(result.bands, :high)
     @test result.bands[:low].band  == (100.0,  1000.0)
     @test result.bands[:high].band == (5000.0, 10000.0)
-    # No :broadband default — the explicit Dict was forwarded, not replaced.
-    @test !haskey(result.bands, :broadband)
 end
 
 @testset "compute_spl(Audiodata): window_seconds changes spl_dB frame count" begin
@@ -307,11 +299,12 @@ end
     audio = Audiodata(randn(Float64, N), Float32(fs), DateTime(2023, 1, 1);
                       calibration = ScalarCalibration(-153.0f0))
 
-    result_short = compute_spl(audio; window_seconds = 0.1)
-    result_long  = compute_spl(audio; window_seconds = 0.5)
+    bands = Dict(:full => (10.0, Float64(fs) / 2.0))
+    result_short = compute_spl(audio; bands, window_seconds = 0.1)
+    result_long  = compute_spl(audio; bands, window_seconds = 0.5)
 
-    @test length(result_short.bands[:broadband].spl_dB) == 19
-    @test length(result_long.bands[:broadband].spl_dB)  == 3
+    @test length(result_short.bands[:full].spl_dB) == 19
+    @test length(result_long.bands[:full].spl_dB)  == 3
 end
 
 # ─── D5: fft_plan forwarding through compute_spl(Audiodata) ──────────────────
@@ -328,11 +321,14 @@ end
     # Plan built for nfft=512 but window covers the full N=4800 samples → mismatch.
     wrong_plan = make_spectrogram_plan(fs, 512 / fs)
     @test_throws AssertionError compute_spl(audio;
-        window_seconds = N / fs, fft_plan = wrong_plan)
+        window_seconds = N / fs, fft_plan = wrong_plan,
+        bands = Dict(:full => (10.0, Float64(fs) / 2.0)))
 
     # Matching plan size → should compute without error.
     right_plan = make_spectrogram_plan(fs, N / fs)
-    result = compute_spl(audio; window_seconds = N / fs, fft_plan = right_plan)
+    result = compute_spl(audio;
+                         window_seconds = N / fs, fft_plan = right_plan,
+                         bands = Dict(:full => (10.0, Float64(fs) / 2.0)))
     @test result.units === :dB_re_1µPa
 end
 

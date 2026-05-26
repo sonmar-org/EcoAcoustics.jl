@@ -147,10 +147,11 @@ relative to the underwater acoustic reference of 1 µPa:
 L_p = 20 · log₁₀(p_rms / p_ref)     p_ref = 1 µPa  (underwater)
 ```
 
-In EcoAcoustics.jl, broadband SPL is obtained by integrating the PSD across the
-frequency band of interest, then converting to dB. Third-octave-level (TOL) and
-arbitrary-band SPL follow the same approach over restricted bands. SPL
-computation is in task 10.
+In EcoAcoustics.jl, SPL is obtained by integrating the calibrated PSD over an
+explicitly specified frequency band, then converting to dB. Third-octave-level
+(TOL), decidecade, and arbitrary-band SPL all follow the same approach. There is
+no function named "broadband SPL" — callers always pass an explicit frequency
+range to `compute_spl`; see DD-27.
 
 **Reference level note.** The underwater reference (1 µPa) differs from the
 airborne reference (20 µPa). A value in dB re 1 µPa is not comparable to a
@@ -159,6 +160,126 @@ literature sources or measurement systems.
 
 *ISO 18405:2017 §3.1.3 — definition via Merchant 2015; ISO text not directly
 consulted. [Uncertain — secondary source only.]*
+
+---
+
+## Temporal Observation Window (TOW) and Temporal Analysis Window (TAW)
+
+Terms introduced in the ADEON Data Processing Specification (Ainslie et al.
+2018, §2.1.1) to distinguish two nested time scales in soundscape reporting.
+
+**Temporal Analysis Window (TAW):** The short window over which a single
+spectral estimate (PSD frame) is computed. In EcoAcoustics.jl this is the
+`window_seconds` parameter passed to `compute_psd` or `compute_spl`. The DPS
+standard TAW durations are 1 s, 60 s, 1 h, 1 d, 1 month, and 1 year. The
+package default of `window_seconds = 1.0` matches the DPS primary TAW.
+
+**Temporal Observation Window (TOW):** The longer period over which multiple
+TAW frames are aggregated into a single reported metric (mean, percentiles,
+CDF). In EcoAcoustics.jl, all PSD frames computed from a single `Audiodata`
+object or `compute_spl` call form one TOW; the aggregate statistics in
+`BandSPL` (mean, median, percentiles) summarise that TOW. For archive-scale
+reporting, the TOW is determined by how `process_chunks` groups chunks and
+collects results — the package does not currently name a TOW parameter
+explicitly.
+
+---
+
+## Decidecade
+
+A **decidecade** band spans one-tenth of a decade on a logarithmic frequency
+axis: a frequency ratio of `10^(1/10) ≈ 1.259`. This is numerically
+indistinguishable from a **third-octave** band (ratio `2^(1/3) ≈ 1.260`);
+the two terms refer to the same practical band width.
+
+"Decidecade" is the ISO 18405:2017 preferred term for underwater acoustics.
+"Third-octave" (ANSI S1.11) remains in common use in older literature and
+cross-domain tools. EcoAcoustics.jl provides both `tol_bands` (legacy name)
+and `decidecade_bands` (ISO name) as identical functions; output keys use the
+`:tol_N` prefix for compatibility with PAMGuide, MANTA, and Merchant 2015.
+
+The ISO 18405 symbol for decidecade-band sound pressure level is L_p,ddec.
+EcoAcoustics.jl computes this via `compute_decidecade` or `compute_tol`.
+
+**Edge formula note:** EcoAcoustics.jl uses ANSI S1.11 base-2 edges
+(`f_c × 2^(±1/6)`). The ADEON DPS specifies base-10 edges (`f_c × 10^(±1/20)`).
+The relative difference is ~0.04%; at 1 Hz PSD resolution the band boundaries
+are identical to within one bin. See DD-20.
+
+---
+
+## Energetic mean
+
+The **energetic mean** of a set of SPL values `{L₁, L₂, …, Lₙ}` is:
+
+```
+L_energetic = 10 × log₁₀(1/n × Σ 10^(Lᵢ/10))
+```
+
+This averages in the linear power domain and then converts back to dB. It is
+the physically correct average when the quantity of interest is *mean power*
+over time.
+
+The arithmetic mean of dB values (`(L₁ + L₂ + … + Lₙ) / n`) does not
+preserve total power and is incorrect for acoustic averaging. Merchant 2015
+fig. 4 reports the energetic mean; the ADEON DPS calls it "the arithmetic mean
+computed on linear values" (meaning: compute the mean on the linear quantities
+`10^(Lᵢ/10)`, then express the result in dB).
+
+In EcoAcoustics.jl, `BandSPL.mean_dB` is the energetic mean of the per-frame
+SPL time series within the observation window.
+
+---
+
+## System-weighted vs frequency-flat broadband SPL
+
+The ADEON DPS Figure 1 shows two parallel paths to broadband sound pressure
+level (L_p,broadband):
+
+**Frequency-flat path** (what EcoAcoustics.jl implements): Compute the
+calibrated PSD using the full frequency-dependent calibration, then integrate
+over the band: `L_p = 10 × log₁₀(Σ_k P(fₖ) × Δf)`. The result uses the
+correct calibration at every frequency bin.
+
+**System-weighted path** (not implemented in v1): Apply a single
+representative sensitivity value — typically the hydrophone sensitivity at
+250 Hz — directly to the time-domain signal, then take RMS. This is faster
+(no FFT required for the broadband value alone) but uses only one point on
+the calibration curve. For instruments with flat frequency response the two
+paths agree exactly. For instruments with frequency-dependent response
+(e.g. Rockhopper with a TF calibration curve), the frequency-flat path is the
+physically correct choice.
+
+See DD-26 for the rationale for implementing only the frequency-flat path in v1.
+
+**No "broadband SPL" function.** EcoAcoustics.jl does not expose a
+`compute_broadband_spl` function or a default broadband band. Callers always
+pass an explicit frequency range: `compute_spl(psd; bands = Dict(:full =>
+(10.0, 24000.0)))`. This makes the lower edge — which depends on the instrument's
+calibrated response — explicit and auditable rather than silently assumed. See
+DD-27.
+
+---
+
+## ISO level notation
+
+ISO 18405:2017 defines standardised symbols for underwater acoustic levels.
+The symbols used in ADEON DPS documentation and in EcoAcoustics.jl docstrings:
+
+| Symbol | Name | EcoAcoustics.jl function / field |
+|:--|:--|:--|
+| L_p | Sound pressure level (broadband) | `compute_spl`, `BandSPL.mean_dB` |
+| L_pk | Peak sound pressure level | not implemented (v1) |
+| L_p,ddec | Decidecade-band sound pressure level | `compute_decidecade` / `compute_tol` |
+| L_E | Sound exposure level | not implemented (v1) |
+| L_E,ddec | Decidecade-band sound exposure level | not implemented (v1) |
+| β | Kurtosis (impulsiveness metric) | not implemented (v1) |
+
+All levels are relative to 1 µPa (underwater). In-air equivalents use 20 µPa;
+set `environment = :air` in EcoAcoustics.jl to switch reference pressures.
+
+*Definitions from ISO 18405:2017. [ISO text not directly consulted; sourced
+via ADEON DPS (Ainslie et al. 2018) and Merchant 2015.]*
 
 ---
 
@@ -172,3 +293,6 @@ consulted. [Uncertain — secondary source only.]*
 - ISO 18405:2017 *Underwater acoustics — Terminology*. Definitions noted as
   *[uncertain — secondary source only]* were sourced from the above secondary
   literature, not from the ISO text directly.
+- Ainslie MA, Miksis-Olds JL, Martin B, Heaney K, de Jong CAF, von
+  Benda-Beckmann AM, Lyons AP (2018) ADEON Underwater Soundscape and Modeling
+  Metadata Standard. Soundscape Specification deliverable v1.0.

@@ -146,6 +146,13 @@ Constraints:
   acoustics literature around 2018; older literature (including Merchant 2015)
   uses "third-octave". Both refer to 1/3-decade frequency bands with the same
   preferred center frequencies and edge formula.
+- **Band-edge formula differs from the ADEON DPS** (Ainslie et al. 2018):
+  `tol_bands` uses ANSI S1.11 base-2 edges (`f_c × 2^(±1/6) ≈ f_c × 1.1225`);
+  the DPS specifies base-10 edges (`f_c × 10^(±1/20) ≈ f_c × 1.1220`). The
+  relative difference is ~0.04% (~0.04 Hz at 1 kHz), negligible for integer-Hz
+  PSD resolution. This deviation is deliberate and documented in DD-20; using
+  ANSI preferred centers ensures label compatibility with PAMGuide, MANTA, and
+  Merchant 2015.
 - Caller is responsible for Nyquist clipping.
 
 Fails when:  Never. Returns empty Dict for ranges with no matching bands.
@@ -191,7 +198,8 @@ Purpose:     Alias for [`tol_bands`](@ref). Returns ANSI S1.11 third-octave
 
 Arguments:   Same as [`tol_bands`](@ref).
 Returns:     Same as [`tol_bands`](@ref).
-Constraints: Same as [`tol_bands`](@ref).
+Constraints: Same as [`tol_bands`](@ref), including the ADEON DPS base-10 edge
+             deviation documented there and in DD-20.
 Fails when:  Never.
 
 Example:
