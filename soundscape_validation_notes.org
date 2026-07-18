@@ -1,0 +1,119 @@
+#+TITLE: Soundscape Validation Notes (for methods writing)
+#+AUTHOR: Robert
+#+DATE: 2026-07-18
+#+STARTUP: overview
+
+Writing-ready summary of the EcoAcoustics.jl soundscape validation against
+PAMGuide (and the MANTA/ADEON method check). Developer-side detail lives in
+=docs/design_decisions.md= (DD-24, DD-25, DD-30); this file is the narrative for
+the dissertation methods section.
+
+* TL;DR for the methods section
+- EA's PSD is validated against PAMGuide to ~0.001 dB — the calibration,
+  spectral estimation, and file I/O are correct end to end.
+- EA reports decidecade (third-octave) band levels by *frequency-domain spectral
+  integration of the PSD* — the same method family as MANTA and the ADEON DPS,
+  and NOT the same as PAMGuide's classical time-domain filter bank. State this
+  explicitly, because the two methods differ by up to ~1.7 dB at low frequency.
+- EA and PAMGuide run at about the same single-file speed.
+
+* Validation file and settings
+- File: =T1-C_test_20170614_000000.wav= (site T1-C inshore SM3M 681787),
+  14.4 M samples = 300.0 s at 48 kHz. June 2017 → pre-Apr-2018 era.
+- Calibration (scalar, this era): hydrophone −165 + preamp +12 (12 dB gain) +
+  board 0 + 20·log10(1/vADC) with vADC = 1.0 V(0-peak) → system sensitivity
+  *−153 dB re 1 V/µPa*. (Post-Apr-2018 files use 0 dB gain → −165; not this file.)
+  - ADC note: the SM3M manual's "0.707 V RMS (2 V p-p) full scale" all describe
+    ONE level. PAMGuide/EA want the 0-peak value = (p-p)/2 = *1.0 V*. Do NOT enter
+    0.707 (that is the RMS of the same level) — it would offset levels by +3 dB.
+- Analysis: Hann window, N = 48000 (1 s), 50 % overlap, time-averaged over the
+  whole file. PAMGuide calibration set to Mh=−165, G=12, vADC=1.0 (S=−153) to
+  match EA exactly.
+
+* Result 1 — PSD (the core validation)
+- EA vs PAMGuide PSD: *mean |Δ| = 0.0014 dB, bias −0.0006 dB* over 23,971 bins
+  ≥ 30 Hz. A single isolated bin differs ~3 dB (a sharp tonal where symmetric vs
+  periodic Hann leakage differs; 0.004 % of bins, immaterial to any band metric).
+- Bins < 30 Hz are excluded from the comparison: the symmetric-vs-periodic Hann
+  window gives uncorrelated per-frame residuals there despite correct
+  time-averaged behaviour (see DD-24).
+- Interpretation: this validates the SM3M calibration application, the Merchant
+  (2015) PSD normalisation, and the WAV read — the whole spectral pipeline.
+
+* Result 2 — decidecade / third-octave levels (the METHOD point to write clearly)
+This is the subtle part and the one to explain in the thesis.
+
+** Three ways to compute a third-octave / decidecade level
+1. *Time-domain filter bank* (PAMGuide =PG_TOL=, classical ANSI/IEC): design a
+   band-pass filter per band and take the RMS of the filtered signal. The filter
+   has gradual skirts.
+2. *Frequency-domain spectral integration* (EcoAcoustics.jl): sum the PSD over the
+   FFT bins inside each band and convert to a level. Hard band edges (a bin is
+   fully in or fully out).
+3. *Frequency-domain spectral integration with fractional edges* (MANTA / ADEON
+   DPS): same as (2) but bins that straddle a band boundary are split by percent
+   overlap between the two adjacent bands.
+
+** What was found
+- EA (method 2) vs PAMGuide =PG_TOL= (method 1): up to *1.7 dB at 63–315 Hz*,
+  converging to < 0.1 dB above ~1 kHz. This is a *method difference, not an
+  error*: at low frequency a band spans only ~10–15 of the 1 Hz FFT bins, so the
+  filter skirts (method 1) vs hard bins (method 2) diverge; at high frequency the
+  band spans hundreds of bins and the two agree.
+- EA (method 2) vs PAMGuide's own PSD integrated into the same bands (i.e. method
+  2 applied to PAMGuide's spectrum): *mean |Δ| = 0.0008 dB across all bands*. This
+  proves EA's spectral decidecade is correct; the 1.7 dB gap is entirely the
+  filter-bank-vs-spectral choice.
+
+** EA vs the MANTA/ADEON convention (verified, not assumed)
+- EA uses the *same method family* as MANTA and ADEON: frequency-domain spectral
+  integration, NOT a filter bank. Verified against primary sources:
+  - Martin et al. (2021), /Hybrid millidecade spectra/, JASA Express Lett.
+    1, 011203: stores mean PSD; decidecades/third-octaves are found by *summing
+    the millidecades* (spectral summation).
+  - ADEON Data Processing Specification: decidecades computed by *integrating the
+    PSD estimates of mean-square pressure over the bands, in the frequency
+    domain.*
+- BUT EA differs from ADEON in *edge handling*: ADEON splits straddling bins
+  fractionally (method 3); EA uses hard edges (method 2, = DD-25 not yet
+  implemented). So EA matches the ADEON *approach* but is not bit-identical at
+  band edges. The residual is smaller than the filter-bank difference and has not
+  been separately quantified. Implementing fractional edges (DD-25) would close it.
+
+** Suggested sentence for the thesis
+"Decidecade band levels were computed by integrating the calibrated power
+spectral density over each band in the frequency domain (as in the ADEON Data
+Processing Specification and MANTA hybrid-millidecade products), rather than by a
+time-domain filter bank. This spectral estimate agreed with an independent
+PAMGuide PSD integrated over the same bands to within 0.001 dB; it differs from
+PAMGuide's filter-bank third-octave output by up to ~1.7 dB below ~300 Hz, a
+known consequence of the two methods. Band edges used hard bin boundaries;
+fractional partial-bin weighting (ADEON) was not applied."
+
+* Band convention (decidecade base-10)
+- EA's third-octave / decidecade bands use *base-10* definitions: exact centre
+  f_c = 10^(n/10) (63.096, 125.89, 251.19 Hz), edges f_c × 10^(±1/20), with the
+  ANSI preferred nominal value (63, 125, 250) kept only as the label. This is the
+  ISO 18405 / ADEON / MANTA decidecade convention. (Octave bands remain base-2.)
+
+* Result 3 — speed
+- Warm (excluding Julia's one-time JIT compile), single 5-min file:
+  EA =compute_psd= ≈ 0.28–0.30 s vs PAMGuide ≈ 0.26 s — effectively equal.
+  EA's WAV read (~0.2 s) is a little slower than PAMGuide's (~0.08 s).
+- Both use FFT internally, so per-file speed is comparable. EA's advantage is
+  archive-scale throughput (threading, composability, no MATLAB licence), not
+  single-file latency. A fair "why Julia" comparison should be run at deployment
+  scale, not on one file (see ROADMAP "Performance benchmarking").
+
+* Files
+- Audio + PAMGuide CSVs + EA PSD CSV: =test/validation/sm3m/=.
+- Developer decisions: =docs/design_decisions.md= DD-24 (low-bin Hann), DD-25
+  (partial-bin not implemented), DD-30 (base-10 + method verification).
+
+* References
+- Martin, S.B. et al. (2021). Hybrid millidecade spectra. JASA Express Letters
+  1(1):011203. https://doi.org/10.1121/10.0003324
+- ADEON Data Processing Specification.
+  https://figshare.com/articles/online_resource/ADEON_Data_Processing_Specification/12412610
+- Merchant, N.D. et al. (2015). Measuring acoustic habitats. Methods Ecol. Evol.
+  6:257–265. (PSD normalisation; PAMGuide.)

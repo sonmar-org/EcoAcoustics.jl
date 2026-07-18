@@ -296,3 +296,59 @@ function compute_ltsa(audio::Audiodata;
     return LTSAResult(matrix, freqs, column_times, audio.fs,
                       Float64(average_span_seconds), is_cal, resolved_cal)
 end
+
+"""
+    compute_spl(ltsa::LTSAResult; bands, environment=:water) -> SPLResult
+
+Purpose:     Integrate frequency bands out of an LTSA, producing one band-level
+             time series per band. Each LTSA time column is treated as a single
+             spectral estimate: for every column the power is summed across the
+             band's bins, giving a per-column band SPL series plus the energetic
+             mean and percentiles over columns. This is the band time series used
+             for temporal / diel / seasonal soundscape plots. Reuses the same
+             `_integrate_bands` core as `compute_spl(::PSDResult)` — the only
+             difference is that a "column" here is an LTSA time column rather than
+             an FFT frame.
+
+Arguments:
+- `ltsa::LTSAResult`: A calibrated LTSA (µPa²/Hz). Uncalibrated input fails.
+- `bands::Dict{Symbol,Tuple{Float64,Float64}}`: Required (DD-27). Each entry maps
+  a label to a `(low_Hz, high_Hz)` band; a bin is included when its centre lies
+  in `[low_Hz, high_Hz]`. No default.
+- `environment::Symbol = :water`: `:water` (reference 1 µPa) or `:air` (20 µPa).
+
+Returns:     [`SPLResult`](@ref). Each `BandSPL.spl_dB` is the per-column series
+             (length = number of LTSA columns); `SPLResult.time` is
+             `ltsa.column_times` (seconds from the audio start). Units
+             `:dB_re_1µPa` for water.
+
+Constraints:
+- `ltsa` must be calibrated (`ltsa_units(ltsa) === :µPa²_per_Hz`).
+- Percentiles are taken over LTSA columns, so their statistical meaning depends
+  on the column span (`ltsa.average_span_seconds`). A handful of coarse columns
+  gives a coarse distribution.
+
+Fails when:  Uncalibrated LTSA (`AssertionError`, DD-21); a band with
+             `low_Hz ≥ high_Hz` or `high_Hz > Nyquist` (`ArgumentError`); no bins
+             fall in a band (`ArgumentError`).
+
+Example:
+```julia
+lt  = compute_ltsa(audio; average_span_seconds = 60.0)
+spl = compute_spl(lt; bands = Dict(:b100_200 => (100.0, 200.0)))
+spl.bands[:b100_200].spl_dB    # per-minute band level series (dB re 1 µPa)
+spl.bands[:b100_200].mean_dB   # energetic mean over all columns
+```
+
+Do not use when: You want a fine within-file distribution for percentiles — a
+             file's PSD frames (`compute_spl(compute_psd(audio); bands)`) give
+             hundreds of samples per file, whereas an LTSA offers only as many
+             samples as it has columns.
+"""
+function compute_spl(ltsa::LTSAResult;
+                     bands::Dict{Symbol, Tuple{Float64, Float64}},
+                     environment::Symbol = :water) :: SPLResult
+    return _integrate_bands(ltsa.matrix, ltsa.freqs, ltsa.column_times, ltsa.fs,
+                            ltsa_units(ltsa);
+                            bands = bands, environment = environment)
+end

@@ -79,10 +79,20 @@ Transition from single-file analysis to deployment-scale analysis. Foundation fo
 
 Lab-facing comparison material. Establishes the "why Julia over MATLAB" case for the lab and informs NAIRR proposal.
 
+Baseline data point (2026-07-18, 60-min 197 kHz Rockhopper FLAC, Hann N=197368,
+50%, single thread, uncalibrated): PAMGuide compute 16.6 s vs EA =compute_psd=
+25.7 s (+0.5 s average); load ~10 s both (FLAC). So *naive single-thread EA is
+~1.5x SLOWER than PAMGuide per file* — the "why Julia" case is NOT per-file
+single-thread. Root cause: EA materializes the full STFT (10.6 GB ComplexF64) +
+psd_linear (5.3 GB) and makes several multi-GB memory passes (bandwidth-bound),
+even though it does less FFT work than PAMGuide (rfft vs full fft). Peak ~21 GB.
+
+- [ ] *make_spectrogram_plan should accept a FFTW flags kwarg (MEASURE/PATIENT)* — the current default plan_rfft is ESTIMATE. MEASURED 2026-07-18 on the 60-min 197 kHz file: ESTIMATE compute 24.6 s vs MEASURE 18.4 s (1.34x faster; MEASURE build 1.8 s one-time). This closes ~2/3 of the PAMGuide gap (16.6 s) and is exactly the "build one plan, reuse across all chunks/files" pattern the fft_plan arg already supports. ESTIMATE-plan *reuse* saves nothing (0.8 ms build); the win is a MEASURE plan reused, not merely reusing the plan. NB 197368 = 2^3 × 24671 (large prime factor) is a bad FFT size, which is why plan quality matters so much here.
+- [ ] *Streaming/incremental averaged-PSD path* — accumulate sum(abs2) per frame into one O(nfft) vector instead of materializing all frames; cuts memory ~21 GB → ~5 GB and removes the residual ~1.8 s memory-pass cost (18.4 s → toward PAMGuide's 16.6 s). (Keep the full-matrix spectrogram primitive for LTSA/detection; add a fast averaged-PSD route.)
 - [ ] Multi-day Rockhopper files: EcoAcoustics vs MATLAB PAMGuide
 - [ ] Timing infrastructure (BenchmarkTools.jl)
 - [ ] Memory profiling
-- [ ] Comparison table: throughput, memory, scaling behavior
+- [ ] Comparison table: throughput, memory, scaling behavior — report BOTH single-thread and threaded (process_chunks :threads across files), not just one
 - [ ] Write-up or short report for lab distribution
 
 ** TODO Generic event detection primitive [#B] :detection:
@@ -96,6 +106,66 @@ A composable detection layer operating on band-limited SPL time series. Generic 
 - [ ] =AcousticEvent= struct (start/end time, peak time, band SPLs, classification metadata)
 - [ ] Tests against synthetic LTSA-like inputs with known event positions
 - [ ] Documentation page covering parameter selection and known failure modes (turbine tonals, weather events, distant traffic)
+
+** TODO Source-backed streaming compute_ltsa [#B] :soundscape:archival:
+:PROPERTIES:
+:EFFORT:   2d
+:END:
+
+Add =compute_ltsa(source::AbstractAudioSource, start, stop; average_span_seconds,
+...)= that reads one column span at a time via =read_audio_range=, computes its
+averaged PSD, and discards the samples — constant memory over hours-to-months.
+The single-file =compute_ltsa(audio::Audiodata)= stays the primitive; this wraps
+it in the time/source layer. Needed only when an LTSA column must span multiple
+files (columns on a uniform wall-clock grid that don't align to file boundaries).
+
+NOT required for the first dataset (duty-cycled, one self-contained 5-min file
+per cycle, 3 months): each on-period is a single file processed independently,
+so no column ever straddles a file boundary. That case needs only a file-loop
+over the directory (see "Archive-scale processing"), not this task.
+
+- [ ] =compute_ltsa(source, start, stop; ...)= column-by-column read loop
+- [ ] Gap handling: emit gap/low-coverage columns with a coverage_fraction rather than silently shifting the time axis
+- [ ] Carry wall-clock =DateTime= column times (not seconds-from-start) for cross-file/cross-site comparison
+- [ ] Reuse one fft_plan across all columns
+- [ ] Guard against a column spanning an SM3M calibration-era boundary (depends on per-era cal task)
+
+** TODO SM3M per-era scalar calibration [#A] :ea:dissertation:
+:PROPERTIES:
+:EFFORT:   1d
+:END:
+
+The SM3M scalar profile currently hard-codes a single era (−165 + 12 = −153 dB
+re 1 V/µPa, the pre-Apr-2018 standard-gain config). The Ch.1 candidate-band
+analysis (=CANDIDATE_ACOUSTIC_BANDS.org=) spans both eras and needs the
+post-Apr-2018 era at −165 dB (0 dB gain). Absolute band levels are only
+comparable once the correct per-era sensitivity is applied; mixing eras
+uncalibrated is wrong by ~12 dB. See =notes/data_decisions.md= "SM3M Gain Issue".
+
+- [ ] Date-based per-era sensitivity resolution for SM3M (−153 through Mar 2018, −165 from Apr 2018)
+- [ ] Decide mechanism: recorder-profile date logic vs per-deployment override (note: v2 defers per-deployment overrides — confirm this fits v1 scope or is a targeted exception)
+- [ ] Test both eras produce the correct =ScalarCalibration=
+- [ ] Interim workaround: pass =ScalarCalibration(-165f0)= explicitly for 2018+ files until resolved
+
+** TODO Large-WAV (>4 GB) read fails [#B] :ea:archival:
+:PROPERTIES:
+:EFFORT:   1d
+:END:
+
+=read_audio= (via WAV.jl) cannot read WAV files larger than 4 GB. The WAV
+data-chunk size is a 32-bit field that overflows past 4 GB; WAV.jl then computes
+a sample count from the wrapped size, and for 24-bit data (÷3 bytes) it is
+non-integer → =InexactError: UInt64(...)=. Discovered 2026-07-18 on a 6.4 GB
+197 kHz 24-bit test WAV (=~/PAMGuide/test.wav=). EA's =_wavread_corrected=
+fallback (DMON2 header bug) does not cover this and re-raised.
+
+Impact: the primary Rockhopper archive is FLAC (no 4 GB limit — a 1 h 197 kHz
+FLAC reads fine), and duty-cycled SM3M/LS1X WAVs are small, so this does not
+block current work. But any >4 GB WAV is unreadable.
+
+- [ ] Detect overflowed/non-integer WAV data-chunk size in =_wavread_corrected=; compute true sample count from file size and =WAVFormat= instead of trusting the header
+- [ ] Or read large WAVs via a byte-range/streaming path rather than =wavread=-whole
+- [ ] Test against a >4 GB 24-bit WAV
 
 ** TODO Multi-recorder end-to-end validation [#B] :ea:
 :PROPERTIES:

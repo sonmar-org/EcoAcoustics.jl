@@ -30,6 +30,7 @@ makedocs(;
             "SPL"          => "explanations/spl.md",
             "SPL bands"    => "explanations/spl_bands.md",
             "LTSA"         => "explanations/ltsa.md",
+            "Band metrics" => "explanations/band_metrics.md",
             "Glossary"     => "explanations/glossary.md",
         ],
         "API Reference" => "api.md"

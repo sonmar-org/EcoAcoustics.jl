@@ -33,11 +33,14 @@ const TOL_PREFERRED_HZ = Float64[
 ]
 
 # ── Band-edge multipliers ─────────────────────────────────────────────────────
-# For a band of width 1/N octaves, edges = f_c / 2^(1/(2N)) and f_c × 2^(1/(2N)).
-# N=1 (octave):       multiplier = 2^(1/2) = √2  ≈ 1.4142
-# N=3 (third-octave): multiplier = 2^(1/6)       ≈ 1.1225
+# Octave bands use the base-2 (2^(1/(2N))) convention. Third-octave / decidecade
+# bands use the base-10 convention (10^(1/(2·10)) half-bandwidth), matching
+# ISO 18405, ANSI S1.11-2004, the ADEON DPS (Ainslie et al. 2018), PAMGuide, and
+# MANTA. See DD-30 for why third-octave switched from base-2 to base-10.
+# N=1 (octave, base-2):        multiplier = 2^(1/2) = √2   ≈ 1.4142
+# 1/3-decade (decidecade):     multiplier = 10^(1/20)      ≈ 1.1220
 const _OCTAVE_EDGE_FACTOR = 2.0^(1/2)
-const _TOL_EDGE_FACTOR    = 2.0^(1/6)
+const _TOL_EDGE_FACTOR    = 10.0^(1/20)
 
 # ── Symbol helper ─────────────────────────────────────────────────────────────
 # Purpose:  Build a band label Symbol from a prefix string and a preferred
@@ -134,25 +137,28 @@ Arguments:
   Pass `fs/2` to clip at Nyquist.
 
 Returns:     `Dict{Symbol, Tuple{Float64, Float64}}`. Keys are `:tol_N` Symbols
-             using the ANSI preferred center frequency. Non-integer preferred
-             values use an underscore decimal separator: `:tol_12_5`, `:tol_31_5`.
-             Band edges are `(f_c / 2^(1/6), f_c × 2^(1/6))` — the ANSI S1.11
-             third-octave edges derived from the preferred center.
+             using the ANSI preferred (nominal) center frequency for readability
+             and axis compatibility. Non-integer preferred values use an
+             underscore decimal separator: `:tol_12_5`, `:tol_31_5`. Band edges
+             are the **base-10 decidecade** edges `(f_c / 10^(1/20), f_c ×
+             10^(1/20))`, where `f_c = 10^(n/10)` is the exact decidecade center
+             for band index `n` (so `:tol_63` has center 63.096 Hz, not 63.0).
 
 Constraints:
-- Center frequencies are the ANSI S1.11-2004 preferred values.
+- Labels use the ANSI S1.11-2004 preferred (nominal) centers; edges use the
+  exact base-10 decidecade centers `f_c = 10^(n/10)` (ISO 18405 / ADEON / MANTA
+  definition). Band levels are computed by **frequency-domain spectral
+  integration** of the PSD — the same method family ADEON and MANTA use (verified
+  against Martin et al. 2021 and the ADEON DPS; see DD-30), and validated against
+  PAMGuide's PSD integrated into the same bands to ~0.001 dB. Two differences to
+  be aware of (DD-30): (1) PAMGuide's `PG_TOL` uses a time-domain **filter bank**,
+  which diverges from spectral integration by up to ~1.7 dB at low frequency;
+  (2) ADEON splits straddling edge bins **fractionally**, whereas EA uses **hard**
+  bin edges (DD-25) — a smaller low-frequency difference from exact ADEON output.
 - `tol_bands` and [`decidecade_bands`](@ref) are identical. The term
   "decidecade" (ISO 18405:2017) superseded "third-octave" in the underwater
   acoustics literature around 2018; older literature (including Merchant 2015)
-  uses "third-octave". Both refer to 1/3-decade frequency bands with the same
-  preferred center frequencies and edge formula.
-- **Band-edge formula differs from the ADEON DPS** (Ainslie et al. 2018):
-  `tol_bands` uses ANSI S1.11 base-2 edges (`f_c × 2^(±1/6) ≈ f_c × 1.1225`);
-  the DPS specifies base-10 edges (`f_c × 10^(±1/20) ≈ f_c × 1.1220`). The
-  relative difference is ~0.04% (~0.04 Hz at 1 kHz), negligible for integer-Hz
-  PSD resolution. This deviation is deliberate and documented in DD-20; using
-  ANSI preferred centers ensures label compatibility with PAMGuide, MANTA, and
-  Merchant 2015.
+  uses "third-octave". Both refer to 1/10-decade frequency bands.
 - Caller is responsible for Nyquist clipping.
 
 Fails when:  Never. Returns empty Dict for ranges with no matching bands.
@@ -161,7 +167,7 @@ Example:
 ```julia
 bands = tol_bands(10.0, 1000.0)
 # 17 bands: :tol_10, :tol_12_5, :tol_16, ..., :tol_1000
-bands[:tol_1000]   # (890.9..., 1122.5...)  = (1000/2^(1/6), 1000×2^(1/6))
+bands[:tol_1000]   # (891.25..., 1122.02...)  = (1000/10^(1/20), 1000×10^(1/20))
 ```
 
 Do not use when:
@@ -177,10 +183,17 @@ for Standardization.
 """
 function tol_bands(low_Hz::Real, high_Hz::Real) :: Dict{Symbol, Tuple{Float64, Float64}}
     result = Dict{Symbol, Tuple{Float64, Float64}}()
-    for f_c in TOL_PREFERRED_HZ
-        low_Hz <= f_c <= high_Hz || continue
-        result[_band_label("tol", f_c)] = (f_c / _TOL_EDGE_FACTOR,
-                                           f_c * _TOL_EDGE_FACTOR)
+    for f_pref in TOL_PREFERRED_HZ
+        low_Hz <= f_pref <= high_Hz || continue
+        # Label uses the preferred (nominal) center for readability and axis
+        # compatibility (:tol_63), but the integration edges are derived from the
+        # EXACT base-10 decidecade center 10^(n/10) — this is what makes the band
+        # identical to ISO/ADEON/PAMGuide (DD-30). n is the decidecade band index;
+        # each preferred value maps cleanly to one n (63→18, 125→21, 250→24).
+        n  = round(Int, 10 * log10(f_pref))
+        fc = 10.0^(n / 10)
+        result[_band_label("tol", f_pref)] = (fc / _TOL_EDGE_FACTOR,
+                                              fc * _TOL_EDGE_FACTOR)
     end
     return result
 end
@@ -198,8 +211,8 @@ Purpose:     Alias for [`tol_bands`](@ref). Returns ANSI S1.11 third-octave
 
 Arguments:   Same as [`tol_bands`](@ref).
 Returns:     Same as [`tol_bands`](@ref).
-Constraints: Same as [`tol_bands`](@ref), including the ADEON DPS base-10 edge
-             deviation documented there and in DD-20.
+Constraints: Same as [`tol_bands`](@ref) — base-10 decidecade edges matching
+             ISO 18405 / ADEON DPS / PAMGuide (DD-30).
 Fails when:  Never.
 
 Example:

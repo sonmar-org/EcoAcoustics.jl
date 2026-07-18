@@ -1,0 +1,87 @@
+#+TITLE: EcoAcoustics.jl Performance Notes
+#+AUTHOR: Robert
+#+DATE: 2026-07-18
+#+STARTUP: overview
+
+Consolidated performance findings from the SM3M/Rockhopper benchmarking against
+MATLAB PAMGuide. Written for the lab "why Julia" writeup and NAIRR proposal.
+Developer follow-ups are tracked in ROADMAP.org ("Performance benchmarking").
+
+* Headline
+- *Per file, single thread, EcoAcoustics.jl is currently ~1.5x SLOWER than
+  PAMGuide.* Do NOT claim "faster" from a single-file stopwatch test — it loses.
+- The gap is small, fully explained, and cheaply closed (FFT plan quality +
+  memory streaming). After those, per-file is a tie.
+- *The real case for Julia is throughput at archive scale*: threading across
+  files (PAMGuide/MATLAB is single-threaded per file) and free horizontal scaling
+  on HPC with no licence. That is where a 120 TB archive becomes tractable.
+
+* Single-file benchmark (60-min 197 kHz Rockhopper FLAC, Hann N=197368, 50%, 1 thread)
+| stage        | EcoAcoustics | PAMGuide |
+| load (FLAC)  | 9.9 s (warm) | 9.6 s    |
+| compute PSD  | 24.5 s       | 16.6 s   |
+- Read is a tie once FLAC.jl is warm (first read in a session pays ~2 s FLAC JIT).
+- Recompilation ruled out: compute was flat across 3 runs (24.5 / 24.8 / 24.5 s).
+
+* What the ~1.5x gap is made of
+1. *FFTW plan quality (dominant, ~6 s / 1.34x).* EA builds ESTIMATE plans
+   (=make_spectrogram_plan= → =plan_rfft=, default). A MEASURE plan built ONCE
+   (1.8 s) and reused drops compute 24.6 → 18.4 s. MATLAB's fft uses
+   MEASURE-caliber plans + a cache, which is why PAMGuide was ahead.
+   - NB reusing an ESTIMATE plan saves nothing (0.8 ms build). The win is a
+     MEASURE plan reused — not plan reuse per se.
+   - 197368 = 2^3 × 24671 (large prime factor) is a bad FFT size, so plan quality
+     matters a lot here. SM3M's 48000 = 2^7·3·5^3 is a good size (plan quality
+     barely matters at 48 kHz).
+2. *Memory materialisation (~1.8 s residual).* EA's =spectrogram= allocates the
+   full complex STFT (10.6 GB) and =compute_psd= allocates psd_linear (5.3 GB),
+   with several multi-GB passes — memory-bandwidth bound. An averaged PSD never
+   needs all frames at once.
+
+* Threading (8765-file SM3M workload, 12900K, 16 cores / 24 threads)
+Per-file band_metrics on 48 kHz 5-min files:
+| phase   | serial   | threaded (24) | speedup |
+| read    | 0.195 s  | -             | 3.5x    |
+| compute | 0.259 s  | -             | 3.7x    |
+| total   | 0.468 s  | 0.157 s       | 3.0x    |
+- Only ~3.5x on 24 threads, well below the 16 physical cores' potential. Causes:
+  - *read*: I/O bound (disk read bandwidth; worse while a file transfer competes).
+  - *compute*: GC + memory-bandwidth bound — again the full-STFT materialisation.
+    Julia GC serialises across threads when every task allocates ~350 MB, capping
+    scaling ~3-4x.
+- So the SAME materialisation design hurts three ways: per-file speed, the memory
+  ceiling on long files, and threading scalability.
+
+* The one high-leverage fix
+*Streaming / incremental averaged-PSD path*: accumulate sum(abs2) per frame into
+one O(nfft) vector instead of materialising all frames. Expected effects:
+- memory 21 GB → ~5 GB for a 1 h 197 kHz file (removes the multi-hour OOM ceiling);
+- removes the ~1.8 s materialisation cost (single-file → parity with PAMGuide);
+- far less allocation → threading scales toward the core count, not ~3.5x.
+Keep the full-matrix =spectrogram= primitive (LTSA, future click detection need
+all frames); add a fast averaged-PSD route beside it.
+
+Secondary fixes: MEASURE-plan option on =make_spectrogram_plan= (1.34x on bad FFT
+sizes, e.g. Rockhopper 197368); parallel GC (=julia --gcthreads=N=).
+
+* Practical numbers for the Chapter 1 T1C run (8765 files, 48 kHz, 5 min)
+- serial:   ~68 min
+- threaded (24, during transfer): ~23 min; likely ~18-20 min once I/O frees up.
+- Totally practical as-is — do NOT optimise for this one-time run; just run
+  threaded (=examples/process_deployment.jl=, =julia -t auto=).
+
+* Other findings
+- *>4 GB WAV cannot be read* (WAV.jl 32-bit chunk-size overflow; 24-bit → non-
+  integer sample count → InexactError). FLAC is unaffected (a 1 h 197 kHz FLAC
+  reads fine). Primary archive is FLAC, so not blocking. ROADMAP item logged.
+- *Whole-file compute_psd is memory-bound past ~1-2 h at 197 kHz* — chunk longer
+  files (motivates the streaming path and the source-backed archive layer).
+
+* For the writeup — the honest framing
+"Per-file, EcoAcoustics.jl is competitive with PAMGuide after minor FFT-plan and
+memory optimisations. Its decisive advantage for a 120 TB, 10-site archive is
+horizontal scalability — multithreaded per-node processing and licence-free
+distribution across an HPC cluster — which single-threaded, licence-bound MATLAB
+tooling cannot match. Correctness is validated against PAMGuide to ~0.001 dB
+(see soundscape_validation_notes.org)." Benchmark threaded AND multi-node before
+publishing the scaling claim.

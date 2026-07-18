@@ -26,38 +26,36 @@ Fields
     mean of `spl_dB` — see Merchant 2015 and DD-16 for why linear-domain
     averaging is required for physically correct results.
 - `median_dB::Float64`:
-    50th percentile of `spl_dB`.
+    Median SPL = `L50` (exceeded 50% of frames).
 - `L1_dB::Float64`:
-    1st percentile of `spl_dB` — the level below which 1% of frames fall.
-    Estimates the acoustic noise floor.
+    Level exceeded 1% of frames — the loud tail (= 99th statistical percentile).
+    Extreme-transient / loudest-events proxy.
 - `L5_dB::Float64`:
-    5th percentile of `spl_dB` — the level below which 5% of frames fall.
-    Low-ambient indicator.
+    Level exceeded 5% of frames (= 95th percentile). High-transient indicator.
 - `L10_dB::Float64`:
-    10th percentile of `spl_dB`.
+    Level exceeded 10% of frames (= 90th percentile).
 - `L25_dB::Float64`:
-    25th percentile of `spl_dB` — first quartile.
+    Level exceeded 25% of frames (= 75th percentile).
 - `L75_dB::Float64`:
-    75th percentile of `spl_dB` — third quartile.
+    Level exceeded 75% of frames (= 25th percentile).
 - `L90_dB::Float64`:
-    90th percentile of `spl_dB` — high-activity indicator.
+    Level exceeded 90% of frames (= 10th percentile).
 - `L95_dB::Float64`:
-    95th percentile of `spl_dB` — the level below which 95% of frames fall.
-    High-transient indicator.
+    Level exceeded 95% of frames (= 5th percentile). Low-ambient indicator.
 - `L99_dB::Float64`:
-    99th percentile of `spl_dB` — the level below which 99% of frames fall.
-    Extreme-transient proxy.
+    Level exceeded 99% of frames — the quiet background (= 1st percentile).
+    Noise-floor proxy.
 
-Percentile convention
----------------------
-`L_n` is the **n-th percentile** of the SPL time series — the level *below*
-which n% of frames fall. This is the standard statistical convention and
-matches Merchant et al. (2015) fig. 4 and modern soundscape literature.
+Percentile convention (DD-31)
+-----------------------------
+`L_n` is the **exceedance level**: the SPL exceeded n% of the frames, following
+the ISO 18405 terminology standard (also ADEON, OSPAR/JOMOPANS). Equivalently,
+`L_n` equals the **(100−n)th statistical percentile**. Consequences:
 
-Note: some engineering standards use the inverse convention (L_n = level
-*exceeded* n% of the time). EcoAcoustics.jl uses the statistical convention
-throughout. When comparing output against other tools, verify which convention
-they use — a reported L1 in one tool may equal L99 in another.
+- `L5` is the **loud** tail; `L95` is the **quiet** background; `L1 ≥ L99` always.
+- This is the inverse of the raw-percentile labelling used on SPD plots
+  (where a `5%` line is the quiet 5th percentile). A `5%` SPD line corresponds
+  to EA's `L95`.
 
 Single-frame note
 -----------------
@@ -68,8 +66,10 @@ behavior, not a degenerate case to guard against.
 
 References
 ----------
-Merchant et al. (2015) Measuring Acoustic Habitats. Methods in Ecology and
-Evolution, 6, 257–265. Percentile convention (fig. 4) and energetic mean.
+ISO 18405:2017 Underwater acoustics — Terminology (exceedance level). Ainslie
+et al. (2021) A Terminology Standard for Underwater Acoustics. Merchant et al.
+(2015) Measuring Acoustic Habitats, Methods in Ecology and Evolution, 6,
+257–265 (energetic mean).
 """
 struct BandSPL
     band::Tuple{Float64, Float64}
@@ -246,16 +246,48 @@ Evolution, 6, 257–265.
 function compute_spl(psd::PSDResult;
                      bands::Dict{Symbol, Tuple{Float64, Float64}},
                      environment::Symbol = :water) :: SPLResult
+    # Delegates to the shared band-integration core. Each PSD frame is one
+    # "column" of the series. psd_units(psd) reports the calibration state; the
+    # DD-21 calibration assertion lives in _integrate_bands.
+    return _integrate_bands(psd.psd_linear, psd.freqs, psd.time, psd.fs,
+                            psd_units(psd);
+                            bands = bands, environment = environment)
+end
 
-    # DD-21: assert calibration before any computation. Uncalibrated PSDs are
-    # in full-scale²/Hz; integrating them gives meaningless numbers.
-    @assert psd_units(psd) === :µPa²_per_Hz (
-        "compute_spl requires a calibrated PSD (DD-21). " *
-        "psd_units(psd) must be :µPa²_per_Hz; got $(psd_units(psd)). " *
-        "Call compute_psd with a calibration, or use " *
-        "compute_spl(audio::Audiodata; ...) which resolves calibration automatically.")
+# Purpose:     Shared core for band-integrated SPL. Integrates each requested
+#              frequency band out of a linear PSD-style matrix (frequency × time,
+#              µPa²/Hz), producing one BandSPL per band: the per-column series
+#              (`spl_dB`), the energetic mean, and the nine ADEON DPS Table C-1
+#              percentiles. Called by both compute_spl(::PSDResult) — where the
+#              columns are FFT frames — and compute_spl(::LTSAResult) — where the
+#              columns are LTSA time columns. There is no signal-processing
+#              difference between the two callers; only the column meaning and
+#              the `times` axis differ.
+# Constraints: `matrix` must be calibrated (`units_symbol === :µPa²_per_Hz`);
+#              `freqs` uniformly spaced with ≥ 2 bins; every band inside
+#              (≈10 Hz, Nyquist]. `times` labels the columns of `matrix` (frame
+#              centres for PSD, column start times for LTSA) and is passed
+#              straight through to `SPLResult.time`.
+# Fails when:  uncalibrated matrix (AssertionError, DD-21); a band with
+#              low ≥ high or high > Nyquist (ArgumentError); no bins fall in a
+#              band (ArgumentError); non-uniform bin spacing (AssertionError).
+function _integrate_bands(matrix::Matrix{Float64},
+                          freqs::Vector{Float64},
+                          times::Vector{Float64},
+                          fs::Float32,
+                          units_symbol::Symbol;
+                          bands::Dict{Symbol, Tuple{Float64, Float64}},
+                          environment::Symbol) :: SPLResult
 
-    nyquist = Float64(psd.fs) / 2.0
+    # DD-21: assert calibration before any computation. Uncalibrated input is in
+    # full-scale²/Hz; integrating it gives meaningless numbers.
+    @assert units_symbol === :µPa²_per_Hz (
+        "compute_spl requires calibrated input (DD-21): units must be " *
+        ":µPa²_per_Hz; got $units_symbol. Provide a calibration — e.g. " *
+        "compute_psd / compute_ltsa with a calibration, or the Audiodata forms " *
+        "which resolve calibration automatically.")
+
+    nyquist = Float64(fs) / 2.0
 
     # ── Band validation (DD-19) ───────────────────────────────────────────────
     # Collect all offending labels before throwing, so the user sees every
@@ -285,10 +317,10 @@ function compute_spl(psd::PSDResult;
 
     # ── Uniform bin spacing ───────────────────────────────────────────────────
     # rfftfreq always produces uniform spacing. Asserted here to document the
-    # assumption: compute_spl cannot be used with a non-uniform frequency axis.
-    @assert length(psd.freqs) >= 2 "compute_spl: PSD has fewer than 2 frequency bins"
-    df = psd.freqs[2] - psd.freqs[1]
-    @assert all(d -> d ≈ df, diff(psd.freqs)) "compute_spl: non-uniform PSD bin spacing"
+    # assumption: band integration cannot be used with a non-uniform axis.
+    @assert length(freqs) >= 2 "compute_spl: input has fewer than 2 frequency bins"
+    df = freqs[2] - freqs[1]
+    @assert all(d -> d ≈ df, diff(freqs)) "compute_spl: non-uniform frequency bin spacing"
 
     # ── Reference pressure squared (µPa²) ────────────────────────────────────
     # water: pref = 1 µPa  → pref² = 1.0 µPa²
@@ -299,46 +331,50 @@ function compute_spl(psd::PSDResult;
     result_bands = Dict{Symbol, BandSPL}()
     for (label, (f_lo, f_hi)) in bands
         # First bin with centre ≥ f_lo; last bin with centre ≤ f_hi.
-        i_lo = searchsortedfirst(psd.freqs, f_lo)
-        i_hi = searchsortedlast(psd.freqs, f_hi)
+        i_lo = searchsortedfirst(freqs, f_lo)
+        i_hi = searchsortedlast(freqs, f_hi)
         i_lo <= i_hi || throw(ArgumentError(
-            "compute_spl: no PSD bins fall in band :$label " *
+            "compute_spl: no bins fall in band :$label " *
             "($f_lo Hz – $f_hi Hz; bin width = $df Hz)"))
 
         # Sum power over band bins and multiply by bin width.
         # @view avoids copying the row slice before summing — the SubArray is
-        # read in-place. sum over dims=1 gives (1, n_frames); vec collapses to
-        # Vector{Float64} of length n_frames. Units: µPa².
-        power_per_frame = vec(sum(@view(psd.psd_linear[i_lo:i_hi, :]); dims=1)) .* df
+        # read in-place. sum over dims=1 gives (1, n_cols); vec collapses to a
+        # Vector{Float64} of length n_cols (frames or LTSA columns). Units: µPa².
+        power_per_col = vec(sum(@view(matrix[i_lo:i_hi, :]); dims=1)) .* df
 
-        # Per-frame SPL.
-        spl_dB = 10.0 .* log10.(power_per_frame ./ pref_sq)
+        # Per-column SPL.
+        spl_dB = 10.0 .* log10.(power_per_col ./ pref_sq)
 
         # Energetic mean: average in linear power domain, then convert to dB.
         # Arithmetic mean of dB is incorrect for signals with temporal variation
         # (DD-16); the energetic mean is physically correct.
         mean_dB = 10.0 * log10(mean(10.0 .^ (spl_dB ./ 10.0)))
 
-        # Nine percentiles in a single quantile() call, matching DPS Table C-1.
-        # qs[1]=L1, qs[2]=L5, qs[3]=L10, qs[4]=L25, qs[5]=L50(median),
-        # qs[6]=L75, qs[7]=L90, qs[8]=L95, qs[9]=L99.
+        # ISO 18405 EXCEEDANCE levels (DD-31): L_n is the SPL exceeded n% of the
+        # columns, so L_n equals the (100−n)th statistical percentile. L5 is the
+        # loud tail, L95 the quiet background — the standard used by ISO 18405,
+        # ADEON, OSPAR/JOMOPANS. We compute the quantiles once, then MAP each
+        # exceedance level to its complementary quantile:
+        #   Ln (exceeded n%) = quantile(1 − n/100)
+        # qs indices:   qs[1]=q0.01 … qs[5]=q0.50 … qs[9]=q0.99.
         qs = quantile(spl_dB, [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99])
 
         result_bands[label] = BandSPL(
             (f_lo, f_hi), spl_dB, mean_dB,
-            qs[5],   # median_dB  (L50)
-            qs[1],   # L1_dB
-            qs[2],   # L5_dB
-            qs[3],   # L10_dB
-            qs[4],   # L25_dB
-            qs[6],   # L75_dB
-            qs[7],   # L90_dB
-            qs[8],   # L95_dB
-            qs[9])   # L99_dB
+            qs[5],   # median_dB = L50 (exceeded 50%,  q0.50)
+            qs[9],   # L1_dB     = exceeded 1%   → q0.99 (loud tail)
+            qs[8],   # L5_dB     = exceeded 5%   → q0.95
+            qs[7],   # L10_dB    = exceeded 10%  → q0.90
+            qs[6],   # L25_dB    = exceeded 25%  → q0.75
+            qs[4],   # L75_dB    = exceeded 75%  → q0.25
+            qs[3],   # L90_dB    = exceeded 90%  → q0.10
+            qs[2],   # L95_dB    = exceeded 95%  → q0.05
+            qs[1])   # L99_dB    = exceeded 99%  → q0.01 (quiet background)
     end
 
     units = environment === :water ? :dB_re_1µPa : :dB_re_20µPa
-    return SPLResult(result_bands, psd.time, psd.fs, units, environment)
+    return SPLResult(result_bands, times, fs, units, environment)
 end
 
 # ─── Convenience wrapper: Audiodata ──────────────────────────────────────────

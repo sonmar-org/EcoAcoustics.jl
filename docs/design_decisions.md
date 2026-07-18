@@ -448,6 +448,14 @@ unnecessarily slow.
 
 ### DD-20 — Band generators use ANSI preferred centers; decidecade is an alias for tol
 
+> **Superseded in part by DD-30 (2026-07-18):** the third-octave *edge* formula
+> was changed from base-2 (`2^(±1/6)`) to base-10 (`10^(±1/20)`) for ISO/ADEON
+> decidecade alignment. The claim below that base-2 and base-10 are "functionally
+> identical" is imprecise (they differ ~0.08%). NB: a PAMGuide cross-check showed
+> up to ~1.7 dB TOL divergence at 63–315 Hz, but that is a *filter-bank vs
+> spectral method* difference (DD-30), **not** the edge convention — the base-10
+> switch did not change it. Preferred *centers* as labels (rest of DD-20) hold.
+
 **Decided:**
 1. `octave_bands` and `tol_bands` use the tabulated ANSI preferred center
    frequencies (`OCTAVE_PREFERRED_HZ`, `TOL_PREFERRED_HZ`), not the values
@@ -809,3 +817,209 @@ over the same span bit-for-bit.
 **Where:** `src/soundscape/ltsa.jl` (`LTSAResult`, `compute_ltsa`, `_ltsa_column`,
 `ltsa_units`, `to_dB`). Tests in `test/test_ltsa.jl`. Explanation in
 `docs/src/explanations/ltsa.md`.
+
+---
+
+## Session: Band layer and per-cycle table (task 12)
+
+### DD-29 — Shared `_integrate_bands` core; `compute_spl(::LTSAResult)`; per-cycle `band_table`
+
+**Decided:** Three related additions for the Chapter 1 candidate-band pipeline.
+
+1. **`_integrate_bands` shared core.** The band-integration body that lived
+   inside `compute_spl(::PSDResult)` was extracted verbatim into an internal
+   `_integrate_bands(matrix, freqs, times, fs, units_symbol; bands, environment)`
+   in `spl.jl`. `compute_spl(::PSDResult)` now delegates to it; behaviour is
+   unchanged (all pre-existing SPL and PAMGuide-SPL tests still pass).
+
+2. **`compute_spl(::LTSAResult)`.** A new method (in `ltsa.jl`, where `LTSAResult`
+   is in scope) integrates bands out of an LTSA matrix by calling the same core.
+   An LTSA matrix and a PSD matrix are both `freq × time` linear µPa²/Hz, so
+   there is no signal-processing difference — only the meaning of a "column"
+   (FFT frame vs LTSA time column) and the `times` axis. Verified bit-identical
+   to the PSD path at matched framing.
+
+3. **`band_metrics` / `band_table`.** `band_metrics(audio; bands, window_seconds,
+   …)` returns one tidy `Dict{Symbol,Any}` row: `start_time`, `duration_s`,
+   `n_frames`, and `<bandkey>_<metric>_dB` for every band × metric in
+   `(mean, median, L1, L5, L10, L25, L75, L90, L95, L99, max)`.
+   `band_table(items; reader, bands, …)` maps it over a collection and assembles
+   a typed `DataFrame`, one row per cycle.
+
+**Why (the non-obvious parts):**
+
+- *Extract the core rather than duplicate it.* Duplicating the integration loop
+  for LTSA would risk the two paths drifting. A single core keeps them provably
+  identical; the LTSA equivalence test is what guarantees no drift.
+
+- *Percentiles over PSD frames (test-run choice).* For the first duty-cycled
+  dataset (self-contained 5-min files), `band_metrics` takes percentiles over the
+  file's PSD frames (~hundreds per file), not over LTSA columns — a finer
+  within-cycle distribution, so `L95`/`max` respond to a single vessel pass
+  inside a cycle. This is provisional; the FFT window, band set, and
+  frame-vs-column basis may change for production.
+
+- *Typed columns from `Dict{Symbol,Any}` rows.* `band_table` builds each column
+  with an explicit element-type annotation (`DateTime[…]`, `Float64[…]`,
+  `Int[…]`) rather than a bare comprehension, which would infer `eltype == Any`
+  from the dict values. This keeps columns concretely typed even for an empty
+  table — important for CSV export to R.
+
+- *Schema derived from `bands` alone.* The column set comes from
+  `_band_metric_colnames(bands)`, independent of which items succeeded, so a run
+  with skipped files still produces a well-formed, uniform table.
+
+- *Read inside the error guard.* `band_table` calls `reader(item)` inside the
+  per-item `try`, so corrupt/unreadable files are skipped under
+  `on_error=:skip`. A bare generator of `read_audio` calls could not be skipped
+  this way (the read would happen in the iteration protocol, outside the guard).
+
+- *Candidate bands live outside the package.* EcoAcoustics.jl is general-purpose;
+  the specific Chapter 1 band set is shipped as
+  `examples/band_table_candidate_bands.jl`, not hard-coded.
+
+**EA percentile direction** is unchanged and documented: `L_n` is the n-th
+percentile (level below which n% fall), the reverse of the acoustic "exceeded n%"
+convention — `L1`/`L5` quiet, `L95`/`L99` loud (DD-18, `spl.md`).
+
+**Where:** `src/soundscape/spl.jl` (`_integrate_bands`, slimmed `compute_spl`),
+`src/soundscape/ltsa.jl` (`compute_spl(::LTSAResult)`),
+`src/soundscape/band_table.jl` (`band_metrics`, `band_table`, `METRIC_ORDER`).
+Tests in `test/test_ltsa.jl` and `test/test_band_table.jl`. Explanation in
+`docs/src/explanations/band_metrics.md`. Example in
+`examples/band_table_candidate_bands.jl`.
+
+---
+
+## Session: base-10 decidecade TOL (SM3M PAMGuide validation)
+
+### DD-30 — Third-octave / decidecade bands switched from base-2 to base-10 edges
+
+**Decided:** `tol_bands` / `decidecade_bands` now use **base-10** decidecade band
+definitions: exact center `f_c = 10^(n/10)` and edges `f_c × 10^(±1/20)`, keeping
+the ANSI preferred (nominal) value only as the human-readable label (`:tol_63`
+labels the band whose exact center is 63.096 Hz). `octave_bands` is unchanged
+(base-2, `2^(±1/2)`).
+
+**Why (standards alignment):** EA's soundscape layer targets the ADEON DPS /
+ISO 18405 / MANTA convention, all of which define the decidecade by the **exact
+base-10 center** `10^(n/10)` (63.096, 125.89, 251.19 Hz), not the base-2
+`2^((n−30)/3)` values EA previously used. DD-20 had claimed base-2 and base-10
+were "functionally identical" (`log10(2^(1/3)) ≈ 0.1003`); that is only true to
+~0.08% and is *not* the right convention for a package that reports "decidecade"
+levels aligned to ADEON. So base-10 is adopted for standards consistency,
+independent of any single validation.
+
+**What the PAMGuide validation actually showed (SM3M
+`T1-C_test_20170614_000000.wav`, June 2017, −153 dB era; Hann, N=48000, 50%,
+Mh=−165/G=12/vADC=1.0):**
+
+- **PSD** agreed to **mean |Δ| = 0.0014 dB** over 23,971 bins ≥ 30 Hz — SM3M
+  calibration application, PSD math, and WAV I/O are correct end-to-end.
+- **TOL** vs PAMGuide's `PG_TOL` differed by up to **1.7 dB at 63–315 Hz**,
+  converging to <0.1 dB above 1 kHz. **This is a method difference, not an edge
+  or calibration error, and switching to base-10 did NOT remove it** (an initial
+  misdiagnosis attributed it to base-2 edges). `PG_TOL.m` computes third-octave
+  levels by the **time-domain filter-bank method** (order-3 IIR octave filters
+  via `oct3dsgn`, RMS of the filtered signal). EA integrates the **PSD** over each
+  band (the spectral method used by ADEON and MANTA). Filter skirts vs hard
+  spectral bins diverge where a band spans few bins (low frequency) and agree
+  where it spans many (high frequency).
+- **Proof it is method, not bug:** integrating **PAMGuide's own PSD** into the
+  same base-10 bands (spectral method) matches EA's TOL to **mean |Δ| = 0.0008 dB,
+  max 0.0013 dB across all bands**, while both differ from `PG_TOL` by up to
+  1.7 dB. EA's spectral decidecade is therefore self-consistent and correct as a
+  spectral level; the classical ANSI filter-bank (`PG_TOL`) is a different
+  measurement.
+
+**Verified method sources (2026-07-18):** that ADEON/MANTA use frequency-domain
+spectral integration (not a filter bank) was confirmed against primary sources,
+not assumed:
+- Hybrid millidecade / MANTA (Martin et al. 2021, JASA Express Lett. 1, 011203):
+  files store mean PSD; decidecades/third-octaves are obtained by *summing the
+  millidecades* — spectral summation of PSD-derived values.
+- ADEON Data Processing Specification: *"decidecade values were calculated by
+  integrating the pressure spectral density estimates of the mean-square pressure
+  … over decidecade bands"*; *"Filtering into decidecades is carried out in the
+  frequency domain."*
+
+**Caveat — EA is not bit-identical to ADEON at band edges.** The ADEON DPS splits
+straddling bins fractionally (*"PSDs in bins that straddle two decidecade bands
+are divided according to the percentage overlap"*). EA uses **hard** bin edges
+(a bin is fully in or out) — the deferred DD-25. So EA matches the ADEON/MANTA
+*approach* (frequency-domain spectral integration) but differs slightly at low
+frequency due to hard-vs-fractional edge handling — a smaller effect than the
+filter-bank difference, not yet quantified. Implementing DD-25 (partial-bin
+weighting) would close that residual.
+
+If a classical ANSI filter-bank TOL is ever needed for comparison against
+PAMGuide/PAMGuard-family filter output, it would be a separate function, not a
+change to the spectral `compute_spl` path.
+
+**Why keep octave base-2:** octave bands are conventionally base-2 (√2 edges) and
+are not part of the validated soundscape path; marine PAM uses decidecade/TOL
+throughout. The only theoretical cost — base-10 thirds not tiling a base-2 octave
+exactly (10^(3/10) = 1.995 ≠ 2) — is ~0.1% and immaterial. If base-2 thirds are
+ever needed for a legacy comparison, add a `base=` keyword rather than change the
+default.
+
+**Where:** `src/soundscape/bands.jl` (`_TOL_EDGE_FACTOR = 10^(1/20)`, exact
+base-10 centers in `tol_bands`). Tests in `test/test_bands.jl`. Validation file
+and PAMGuide CSVs in `test/validation/sm3m/`. Supersedes the edge-formula part of
+DD-20.
+
+---
+
+## Session: percentile convention (ISO 18405 exceedance levels)
+
+### DD-31 — Percentiles reported as ISO 18405 exceedance levels (Ln = exceeded n%)
+
+**Decided:** `BandSPL` percentile fields (and the `band_table` `Ln` columns) are
+**exceedance levels** per ISO 18405: `L_n` is the band SPL **exceeded n% of the
+frames/columns**, equivalently the **(100−n)th statistical percentile**. So:
+
+- `L5` = loud tail (exceeded 5%; = 95th percentile), `L95` = quiet background
+  (exceeded 95%; = 5th percentile), `L1 ≥ L50 ≥ L99`.
+- Implementation: quantiles are computed once, then each `L_n` is mapped to the
+  complementary quantile `Ln = quantile(1 − n/100)` in `_integrate_bands`
+  (`src/soundscape/spl.jl`).
+
+**Supersedes DD-18 on direction.** DD-18 originally stored `L_n` as the *n-th
+statistical percentile* (`L1` = quiet 1st percentile). That labelling collides
+with ISO 18405, which reserves `L_n` for exceedance — a `reported L1` in EA then
+equalled another tool's `L99`. DD-31 flips the mapping so the labels mean what
+the standard says. Values are unchanged in kind (still the same quantiles); only
+which quantile each `L_n` label points to changed.
+
+**Why exceedance and not raw percentile:** the community is genuinely split —
+
+- *Formal standard / regulatory:* ISO 18405, ADEON, OSPAR/JOMOPANS, EU-MSFD D11
+  all use **exceedance** `L_n`.
+- *Visualisation / some ecology:* SPD plots label lines by raw **percentile**
+  (`%`), where a `5%` line is the quiet 5th percentile.
+
+For this project the deliverable feeds ICES/OSPAR-adjacent soundscape work, which
+is anchored to ISO 18405. Exceedance gives a single citable terminology standard
+and zero-translation comparability with regional monitoring products. The known
+downside (`L5` = loud is counter-intuitive) is handled by defining it explicitly
+in methods and using `L_n` labels consistently on tables and SPD plots (not mixed
+with raw `%` labels).
+
+**Example methods sentence (for the dissertation / papers):**
+> "Percentile statistics are reported as exceedance levels following ISO 18405:
+> `L_n` is the band sound pressure level exceeded n% of the averaging period, so
+> `L5` is the loud tail and `L95` the quiet background (equivalently, `L_n` is the
+> (100−n)th percentile of the per-frame SPL distribution)."
+
+**Consequence for produced data:** `data/T1C_bands.csv` (produced before this
+decision) was remapped in place — the per-band `L1…L99` values were reordered to
+the exceedance mapping (values identical, correctly relabelled), verified against
+a fresh `band_metrics` computation on one file.
+
+**References:** ISO 18405:2017 *Underwater acoustics — Terminology* (exceedance
+level). Ainslie et al. (2021) *A Terminology Standard for Underwater Acoustics*.
+ADEON *Underwater Soundscape and Modeling Metadata Standard* v1.0.
+
+**Where:** `src/soundscape/spl.jl` (`_integrate_bands` mapping, `BandSPL`
+docstring). Tests: `test/test_ltsa.jl` (direction + mapping cross-check).
+Docs: `docs/src/explanations/spl.md`, `band_metrics.md`, `glossary.md`.

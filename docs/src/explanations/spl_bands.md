@@ -55,17 +55,42 @@ The preferred values are stored in the module-level constants
 
 ## Band edges
 
-For all ANSI band schemes, the integration edges are derived from the
-preferred center, not from adjacent centers:
+Integration edges are derived from the band center, not from adjacent centers.
+Octave bands use the **base-2** convention; third-octave / decidecade bands use
+the **base-10** convention with exact decidecade centers `f_c = 10^(n/10)`
+(DD-30):
 
 ```
-octave band:       f_lo = f_c / 2^(1/2),    f_hi = f_c × 2^(1/2)   (±√2)
-third-octave band: f_lo = f_c / 2^(1/6),    f_hi = f_c × 2^(1/6)   (±∛∛2 ≈ ±1.122)
+octave band:       f_lo = f_c / 2^(1/2),    f_hi = f_c × 2^(1/2)    (±√2, base-2)
+decidecade band:   f_lo = f_c / 10^(1/20),  f_hi = f_c × 10^(1/20)  (≈ ±1.1220, base-10)
 ```
+
+For decidecade bands the label uses the ANSI preferred (nominal) center for
+readability (`:tol_63`), while the edges use the exact base-10 center
+(63.096 Hz) — the ISO 18405 / ADEON / MANTA decidecade definition. Band levels
+are computed by **frequency-domain spectral integration** of the PSD. This is the
+same method family ADEON and MANTA use — verified against the primary sources
+(Martin et al. 2021 hybrid millidecade; ADEON Data Processing Specification),
+which compute decidecades by summing / integrating the PSD in the frequency
+domain, not with a filter bank (DD-30). EA matches PAMGuide's PSD integrated into
+the same bands to ~0.001 dB.
+
+Two differences are worth knowing (both in DD-30):
+
+1. **PAMGuide's dedicated `PG_TOL`** third-octave output uses the older
+   **filter-bank** method (time-domain IIR octave filters), which differs from
+   spectral integration by up to ~1.7 dB at low frequencies (63–315 Hz) where the
+   filter skirts span a large fraction of the band.
+2. **ADEON** splits edge bins that straddle two bands **fractionally** by percent
+   overlap; EA uses **hard** bin edges (a bin is fully in or out — DD-25). So EA
+   matches the ADEON *approach* but is not bit-identical at band edges; the
+   difference is small and concentrated at low frequency.
+
+Neither is an error — they are method / edge-handling choices.
 
 Because edges are computed from centers rather than from adjacent centers,
-adjacent bands may **slightly overlap or gap**. This is standard ANSI practice
-and is present in PAMGuide and MANTA output. It is not a bug.
+adjacent bands may **slightly overlap or gap**. This is standard practice and is
+present in PAMGuide and MANTA output. It is not a bug.
 
 ---
 
@@ -75,10 +100,12 @@ and is present in PAMGuide and MANTA output. It is not a bug.
 the same band scheme:
 - **Third-octave** (ANSI S1.11): traditional term used in air acoustics and
   in Merchant 2015 and all PAMGuide-family literature.
-- **Decidecade** (ISO 18405:2017): a 1/10-decade frequency band, mathematically
-  identical to a third-octave band because `log10(2^(1/3)) ≈ 0.1003 ≈ 1/10`.
-  This term entered the underwater acoustics literature around 2018 and is now
-  preferred in that community.
+- **Decidecade** (ISO 18405:2017): a 1/10-decade frequency band. This term
+  entered the underwater acoustics literature around 2018 and is now preferred
+  in that community. EA implements the base-10 decidecade (DD-30), so
+  `tol_bands` and `decidecade_bands` are the same base-10 band — the near-match
+  `log10(2^(1/3)) ≈ 0.1003` is *not* exact and the ~0.08% edge difference is
+  material at low frequencies (see DD-30).
 
 Both functions produce the same output. Choose whichever term matches your
 literature. `compute_decidecade` delegates directly to `compute_tol` with no
@@ -166,8 +193,8 @@ that band with `ArgumentError`.
 
 When using the convenience wrappers (`compute_tol`, `compute_octave`, etc.),
 choose `high_Hz` such that the uppermost included center's upper edge stays
-within Nyquist. For third-octave bands, the safe upper limit is
-`Nyquist / 2^(1/6) ≈ 0.891 × Nyquist`. For a 48 kHz recording
+within Nyquist. For third-octave (decidecade) bands, the safe upper limit is
+`Nyquist / 10^(1/20) ≈ 0.891 × Nyquist`. For a 48 kHz recording
 (Nyquist = 24 kHz), this is ~21.4 kHz — so the 20 kHz band is the topmost
 safe third-octave band.
 

@@ -189,6 +189,56 @@ end
     @test length(lt5.freqs) == size(lt5.matrix, 1)      # freq axis matches rows
 end
 
+# ─── Test 6: band integration from an LTSA (compute_spl on LTSAResult) ────────
+
+@testset "LTSA: compute_spl band integration" begin
+    fs = 1000.0
+    # 5 columns of 1 s with a rising 100 Hz tone (amplitude = column index), so
+    # the band level rises column to column. window == span → exactly one FFT
+    # frame per column, so an LTSA column equals that frame's PSD exactly.
+    sig = Float64[]
+    for c in 1:5
+        append!(sig, [Float64(c) * cos(2π * 100 * (i - 1) / fs) for i in 1:1000])
+    end
+    a = _audio(sig, fs; calibration = ScalarCalibration(-150.0f0))
+
+    bands = Dict(:b80_120 => (80.0, 120.0), :b200_300 => (200.0, 300.0))
+
+    lt     = compute_ltsa(a; average_span_seconds = 1.0, fft_window_seconds = 1.0,
+                          window = :rectangular)
+    spl_lt = compute_spl(lt; bands = bands)
+
+    # Reference: compute_spl on the whole-file PSD with matched framing (1 s
+    # rectangular, no overlap) → 5 frames == the 5 LTSA columns.
+    psd     = compute_psd(a; window_seconds = 1.0, overlap_fraction = 0.0,
+                          window = :rectangular)
+    spl_psd = compute_spl(psd; bands = bands)
+
+    @test spl_lt.units == :dB_re_1µPa
+    @test length(spl_lt.bands[:b80_120].spl_dB) == 5          # one value per column
+    @test spl_lt.time == lt.column_times                      # column-time axis
+
+    # Band series and aggregate identical to the matched-framing PSD path.
+    for k in (:b80_120, :b200_300)
+        @test spl_lt.bands[k].spl_dB  == spl_psd.bands[k].spl_dB
+        @test spl_lt.bands[k].mean_dB == spl_psd.bands[k].mean_dB
+    end
+
+    # The band level rises across columns (amplitude grew). Under the ISO 18405
+    # exceedance convention (DD-31), L1 is the loud tail (exceeded 1%) and L99 the
+    # quiet background (exceeded 99%), so L1 > L99.
+    s = spl_lt.bands[:b80_120].spl_dB
+    @test issorted(s)                                         # monotonically rising
+    @test spl_lt.bands[:b80_120].L1_dB > spl_lt.bands[:b80_120].L99_dB
+    # Cross-check the exceedance mapping: L5 (exceeded 5%) is the 95th percentile.
+    @test spl_lt.bands[:b80_120].L5_dB ≈ quantile(s, 0.95)
+
+    # Uncalibrated LTSA is rejected before integration (DD-21).
+    un = compute_ltsa(_audio(sig, fs); average_span_seconds = 1.0,
+                      window = :rectangular, cal = NoCalibration())
+    @test_throws AssertionError compute_spl(un; bands = bands)
+end
+
 # ─── Test 5: edge cases ───────────────────────────────────────────────────────
 
 @testset "LTSA: edge cases assert loudly" begin

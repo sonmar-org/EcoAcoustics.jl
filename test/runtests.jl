@@ -29,4 +29,5 @@ const TEST_DIR = joinpath(@__DIR__, "test_files")
     include("test_spl.jl")
     include("test_bands.jl")
     include("test_ltsa.jl")
+    include("test_band_table.jl")
 end

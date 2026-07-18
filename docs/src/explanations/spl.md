@@ -112,19 +112,31 @@ high transients (e.g., impulsive ship noise).
 
 See DD-16 for the same argument applied to `average_psd`.
 
-### Percentiles
+### Percentiles — ISO 18405 exceedance levels (DD-31)
+
+`L_n` is the **exceedance level**: the SPL **exceeded n% of the frames**,
+following the ISO 18405 terminology standard (also ADEON, OSPAR/JOMOPANS,
+EU-MSFD). Equivalently, `L_n` is the **(100 − n)th statistical percentile**:
 
 ```
-L1_dB, L5_dB, median_dB, L95_dB, L99_dB = quantile(spl_dB, [0.01, 0.05, 0.50, 0.95, 0.99])
+Ln = quantile(spl_dB, 1 - n/100)     # L5 = quantile(0.95), L95 = quantile(0.05)
 ```
 
-`L_n` is the **n-th percentile** of `spl_dB` — the level *below which* n%
-of frames fall. This is the standard statistical convention and matches
-Merchant et al. (2015) fig. 4.
+So:
 
-**Warning:** some engineering standards use the inverse: L_n = level
-*exceeded* n% of the time. A reported `L1` in another tool may equal `L99`
-here. Always verify the convention when comparing output across tools.
+- **`L5` is the loud tail** (exceeded only 5% of the time);
+- **`L95` is the quiet background** (exceeded 95% of the time — the standard
+  ambient-noise indicator);
+- `L1 ≥ L50 (median) ≥ L99`.
+
+**This is the inverse of raw-percentile labelling.** On an SPD plot, a line
+labelled `5%` is the *quiet* 5th percentile — that corresponds to EA's `L95`.
+Keep table columns and SPD-plot labels on the same convention; do not mix `L_n`
+(exceedance) with `%` (percentile).
+
+Suggested methods wording: *"Percentile statistics are reported as exceedance
+levels following ISO 18405: `L_n` is the band SPL exceeded n% of the averaging
+period, so `L5` is the loud tail and `L95` the quiet background."*
 
 ### Single-frame case
 

@@ -6,8 +6,9 @@ using EcoAcoustics
 # bands.jl, and from the millidecade index formula f_c(n) = 10^(n/1000).
 #
 # Band edge formula:
-#   octave:      (f_c / 2^(1/2), f_c × 2^(1/2))
-#   third-octave (f_c / 2^(1/6), f_c × 2^(1/6))
+#   octave:      (f_c / 2^(1/2), f_c × 2^(1/2))        base-2
+#   third-octave (f_c / 10^(1/20), f_c × 10^(1/20))    base-10 decidecade (DD-30)
+#                where f_c = 10^(n/10) is the exact decidecade center
 #   millidecade: (10^((n-0.5)/1000), 10^((n+0.5)/1000))
 
 # ─── octave_bands ─────────────────────────────────────────────────────────────
@@ -71,14 +72,26 @@ end
     @test !haskey(result, :tol_125)
 end
 
-@testset "tol_bands: band edges for 1000 Hz" begin
-    # f_c = 1000 Hz; edge factor = 2^(1/6) ≈ 1.12246
-    # f_lo = 1000 / 2^(1/6) ≈ 890.9   f_hi = 1000 × 2^(1/6) ≈ 1122.5
+@testset "tol_bands: band edges for 1000 Hz (base-10 decidecade, DD-30)" begin
+    # :tol_1000 → decidecade band n = round(10·log10(1000)) = 30 → exact center
+    # f_c = 10^3 = 1000 Hz; base-10 half-bandwidth factor = 10^(1/20) ≈ 1.12202.
+    # f_lo = 1000 / 10^(1/20) ≈ 891.25   f_hi = 1000 × 10^(1/20) ≈ 1122.02
     result = tol_bands(1000.0, 1000.0)
     @test length(result) == 1
     f_lo, f_hi = result[:tol_1000]
-    @test f_lo ≈ 1000.0 / 2.0^(1/6) atol=1e-10
-    @test f_hi ≈ 1000.0 * 2.0^(1/6) atol=1e-10
+    @test f_lo ≈ 1000.0 / 10.0^(1/20) atol=1e-10
+    @test f_hi ≈ 1000.0 * 10.0^(1/20) atol=1e-10
+end
+
+@testset "tol_bands: base-10 exact center for non-round nominal (63 Hz, DD-30)" begin
+    # :tol_63 keeps the nominal label 63 but uses the EXACT base-10 center
+    # 10^1.8 ≈ 63.096 Hz — this is what makes it match ISO/ADEON/PAMGuide.
+    result = tol_bands(63.0, 63.0)
+    f_lo, f_hi = result[:tol_63]
+    fc = 10.0^(round(Int, 10*log10(63.0)) / 10)     # 10^1.8 ≈ 63.0957
+    @test fc ≈ 63.0957344 atol=1e-4
+    @test f_lo ≈ fc / 10.0^(1/20) atol=1e-10
+    @test f_hi ≈ fc * 10.0^(1/20) atol=1e-10
 end
 
 @testset "tol_bands: upper-bound clipping" begin
