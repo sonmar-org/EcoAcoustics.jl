@@ -1,0 +1,112 @@
+#+TITLE: Candidate Acoustic Bands for Exploratory Analysis
+#+STARTUP: showall overview
+
+* Purpose
+
+This note defines the acoustic frequency bands to calculate from the SM3M
+recordings and explains why each was selected.
+
+These bands are *exploratory candidates*, not a predefined set of predictors to
+place simultaneously into a statistical model. The goal is to compare their
+temporal behavior, source sensitivity, redundancy, and relationship with dolphin
+presence and feeding before selecting a smaller, defensible subset for GLM/GAMM
+analysis.
+
+* Beach-week scope
+
+For beach week, bands are computed from the matched SM3M broadband recordings
+(see the beach README for the detection ↔ broadband pairing):
+- *Inshore:* T-1C (SM3M 681787)
+- *Midshore:* A-5C (SM3M 681863), W-1C (SM3M 681763, archived as "New1")
+- 2017–2018 deployments (Apr/Jun/Oct 2017; Jul–Dec 2018)
+
+*Offshore is excluded for beach.* The T-3C Snap (1-on/9-off duty → ~125 h of audio
+over a 52-day span, presence-only, no usable ICI export) is marginal and dropped;
+the offshore zone is deferred to the full Ch.2 analysis. So the beach set covers
+*inshore + midshore only*.
+
+*Calibration — required before computing band levels.* Apply the per-era SM3M
+effective sensitivity: *−153 dBV/µPa through Mar 2018* (12 dB gain) and *−165 from
+Apr 2018* (0 dB). Band levels across deployments are only comparable once this is
+applied per era — do not mix eras uncalibrated. (See CLAUDE.md /
+notes/data_decisions.md, "SM3M Gain Issue".)
+
+* Candidate bands
+
+| Band       | Type                     | Primary rationale                                                                                                            |
+|------------+--------------------------+-----------------------------------------------------------------------------------------------------------------------------|
+| 63 Hz      | One-third-octave level   | Standard low-frequency shipping-noise indicator; expected to respond strongly to large commercial vessels and distant shipping. |
+| 125 Hz     | One-third-octave level   | Standard low-frequency shipping-noise indicator; complementary to 63 Hz and often responsive to vessel machinery and propeller noise. |
+| 250 Hz     | One-third-octave level   | Exploratory extension above the conventional 63/125 Hz indicators; may be more sensitive to smaller vessels, fishing vessels, engine harmonics, and machinery noise. |
+| 100–200 Hz | Broad octave-width band  | Captures low-frequency vessel and physical noise while providing a broader ecological summary than a single TOL.             |
+| 200–400 Hz | Broad octave-width band  | Transitional band containing vessel harmonics, machinery noise, weather-related energy, and possible biological contributions. |
+| 400–800 Hz | Broad octave-width band  | Retained because preliminary analyses showed relatively strong seasonal and diel structure; may contain information not apparent in broadband SPL or lower vessel-noise bands. |
+| 1–4 kHz    | Broad exploratory band   | Candidate indicator for smaller, faster vessels (fishing vessels), whose cavitation, engine, propeller, and hull noise may extend higher than large commercial shipping. |
+
+⚠ *Self-contamination caveat for 1–4 kHz:* this band overlaps the dolphin whistle
+band (~2–20 kHz), so it may carry dolphin vocalizations rather than purely vessel
+noise. Treat it as an exploratory vessel indicator with that caveat; the ≤ ~800 Hz
+bands are the safer vessel/wind predictors. (SM3M Nyquist is 24 kHz, so 1–4 kHz is
+well within range.)
+
+* Why use both TOLs and broader bands?
+
+The one-third-octave levels and octave-width bands serve different purposes.
+
+The 63, 125, and 250 Hz TOLs provide standardized and externally comparable
+measures of vessel-related sound. The broader 100–200, 200–400, and 400–800 Hz
+bands provide simpler summaries of soundscape energy that may be more useful for
+ecological interpretation.
+
+Some overlap is intentional. For example, the 125 Hz TOL lies within the 100–200 Hz
+band. Comparing them will show whether the narrower standardized measure adds
+information beyond the broader ecological band.
+
+* Why include 1–4 kHz?
+
+Large commercial vessels often dominate lower frequencies, while smaller and faster
+vessels can produce relatively more energy at higher frequencies through faster
+propeller rotation, cavitation, engine harmonics, exhaust, and hull vibration.
+
+The 1–4 kHz band is therefore included as an exploratory indicator for smaller
+vessels and fishing activity. It is broad enough to avoid depending on a single
+shifting tonal feature, but still narrow enough to remain interpretable. (See the
+self-contamination caveat above.)
+
+If this band appears useful, it can later be divided into 1–2 kHz and 2–4 kHz to
+determine where the signal is concentrated.
+
+* Exploratory evaluation
+
+Before selecting predictors for a GLM or GAMM, each band should be assessed using:
+
+1. *Temporal plots* — hourly and 3-hourly time series, diel cycles, seasonal
+   patterns, and responses to known vessel passages or weather events.
+2. *Correlation and redundancy* — compare correlations among bands. Highly
+   correlated bands should generally not enter the same model unless there is a
+   clear hypothesis and the model structure can support them.
+3. *Association with external vessel data* — compare candidate bands with AIS
+   vessel presence, type, distance, and speed where available. Fishing-vessel
+   indicators should be evaluated separately from large commercial traffic.
+4. *Association with environmental conditions* — examine relationships with wind,
+   rain, and wave height to identify bands dominated by weather.
+5. *Association with dolphin response variables* — compare each band with dolphin
+   presence and feeding metrics using plots and simple single-predictor models
+   before constructing multivariable models.
+6. *Stability across sites and deployments* — determine whether a band behaves
+   consistently across T-1C, A-5C, and W-1C, or whether its usefulness is
+   site-specific.
+7. *Distribution and extreme events* — compare mean, median, upper percentiles, and
+   maxima. Short vessel passages may affect high percentiles or maxima more strongly
+   than hourly means.
+
+* Model-selection principle
+
+The final statistical model should use a small subset of bands chosen because they:
+- represent distinct acoustic processes;
+- are not excessively redundant;
+- have a clear ecological or source-related interpretation;
+- behave consistently enough to support inference;
+- add explanatory value after accounting for weather, season, site, and other covariates.
+
+The exploratory band set is intentionally broader than the eventual model set.

@@ -1,0 +1,255 @@
+#+TITLE: EcoAcoustics.jl Roadmap
+#+AUTHOR: Robert
+#+STARTUP: overview
+#+TODO: TODO(t) NEXT(n) INPROGRESS(p!) BLOCKED(b@) | DONE(d!) DEFERRED(f@)
+#+TAGS: ea(e) soundscape(s) detection(d) archival(a) docs(o) release(r) pubs(p) dissertation(i) hpc(h)
+#+PROPERTY: EFFORT_ALL 1h 2h 4h 1d 2d 3d 1w 2w 1m
+
+This file is the single authoritative roadmap for EcoAcoustics.jl (the former =ROADMAP.md= has been retired and folded into this file). It tracks planned work and contributes to the unified agenda when listed in =org-agenda-files=. Use =C-c a t= to see all TODOs across projects; =C-c a m :ea:= to filter EA-tagged items.
+
+* v1.0.0 Foundation Release :ea:
+
+** TODO Spectral Parameters [#A]                                 :soundscape:
+:PROPERTIES:
+:EFFORT:   1d
+:END:
+
+EA needs a way to keep track of the FFT parameters for downstream analysis and plotting
+
+- [ ] Find a place to add a struct for fft
+- [ ] Adjust all functions to pass this struct instead of FFT parameters
+
+** TODO Long-term spectral average (LTSA) [#A] :soundscape:
+:PROPERTIES:
+:EFFORT:   1d
+:END:
+
+The first priority. LTSA needed immediately for downstream work.
+
+- [ ] =compute_ltsa(audio; average_span_seconds, fft_window_seconds, fft_overlap, cal) → LTSAResult=
+- [ ] =LTSAResult= struct with calibration provenance and time-frequency matrix
+- [ ] Tests against synthetic signals with known time-varying spectral content
+- [ ] =docs/src/explanations/ltsa.md= — narrative, parameter guidance, when to use
+
+** TODO Soundscape indices [#A] :soundscape:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+Each metric is a narrow composable function in =src/soundscape/=, taking already-filtered signal or PSD.
+
+- [ ] Temporal entropy
+- [ ] Permutation entropy
+- [ ] Spectral entropy
+- [ ] Acoustic complexity index (ACI)
+- [ ] Tests against analytical or synthetic reference cases
+- [ ] Documentation page on index selection and failure modes (snapping shrimp, fish chorus, vessel masking)
+
+** TODO Spectral probability density (SPD) [#A] :soundscape:
+:PROPERTIES:
+:EFFORT:   2d
+:END:
+
+Merchant et al. 2013–style SPD. The iconic noise-statistics plot. Critical for distinguishing distributional shifts (vessel-driven vs intermittent-source-driven changes in soundscape).
+
+- [ ] SPD computation
+- [ ] Tests against synthetic stationary and bimodal signal distributions
+- [ ] Documentation page covering SPD interpretation and percentile conventions
+
+** TODO Archive-scale processing [#A] :archival:hpc:
+:PROPERTIES:
+:EFFORT:   1w
+:END:
+
+Transition from single-file analysis to deployment-scale analysis. Foundation for HPC work and the NAIRR proposal.
+
+- [ ] Directory walker handling subdirectories cleanly
+- [ ] =process_chunks= orchestration for multi-file workflows
+- [ ] File-level parallelism via Distributed.jl on CPU
+- [ ] Output organization (per-recorder, per-day, configurable)
+- [ ] Partial-failure handling (corrupted files skipped with logging, not fatal)
+- [ ] Test on a real Rockhopper deployment tree with subdirectories
+- [ ] Validate serial vs parallel output consistency
+- [ ] Document throughput baseline (files/hour, GB/hour) for HPC planning
+
+** TODO Performance benchmarking [#B] :hpc:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+Lab-facing comparison material. Establishes the "why Julia over MATLAB" case for the lab and informs NAIRR proposal.
+
+- [ ] Multi-day Rockhopper files: EcoAcoustics vs MATLAB PAMGuide
+- [ ] Timing infrastructure (BenchmarkTools.jl)
+- [ ] Memory profiling
+- [ ] Comparison table: throughput, memory, scaling behavior
+- [ ] Write-up or short report for lab distribution
+
+** TODO Generic event detection primitive [#B] :detection:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+A composable detection layer operating on band-limited SPL time series. Generic by design: pile-driving events, fish chorus periods, and weather events all use the same primitive. Vessel-specific application is in v1.1.
+
+- [ ] =detect_events(band_spl_series; duration_min, duration_max, threshold, band_ratio) → Vector{AcousticEvent}=
+- [ ] =AcousticEvent= struct (start/end time, peak time, band SPLs, classification metadata)
+- [ ] Tests against synthetic LTSA-like inputs with known event positions
+- [ ] Documentation page covering parameter selection and known failure modes (turbine tonals, weather events, distant traffic)
+
+** TODO Multi-recorder end-to-end validation [#B] :ea:
+:PROPERTIES:
+:EFFORT:   2d
+:END:
+
+Verifies the recorder profile cascade and full pipeline work for instruments beyond Rockhopper.
+
+- [ ] SM3M recordings: load → PSD → SPL → soundscape indices end-to-end
+- [ ] LS1X recordings: same workflow end-to-end
+- [ ] Cross-recorder validation where data permits
+
+** TODO Plot recipes [#B] :ea:docs:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+Plots.jl recipes via =@recipe=, kept out of EcoAcoustics's required dependencies (loaded via package extension). Priority order from highest to lowest.
+
+- [ ] General metrics plots (SPL time series, single PSD spectrum, calibrated spectrogram)
+- [ ] SPD plot (Merchant-style, the noise-statistics visualization)
+- [ ] LTSA plot
+- [ ] Documentation page with example plots
+
+** TODO Examples, tutorials, and documentation polish [#C] :docs:
+:PROPERTIES:
+:EFFORT:   1w
+:END:
+
+Lowest priority within v1, but essential before release.
+
+*** TODO Examples
+- [ ] =examples/01_compute_psd.jl=
+- [ ] =examples/02_compute_spl.jl=
+- [ ] =examples/03_compute_tol.jl=
+- [ ] =examples/04_compute_ltsa.jl=
+- [ ] =examples/05_soundscape_indices.jl=
+- [ ] =examples/06_archival_workflow.jl=
+
+*** TODO Tutorials
+- [ ] =docs/src/tutorials/getting_started.md=
+- [ ] =docs/src/tutorials/batch_processing.md=
+- [ ] =docs/src/tutorials/cookbook.md=
+
+*** TODO Documentation polish
+- [ ] Voice/language pass (current docs read as machine-generated in places)
+- [ ] LLM-readable documentation review (for users behind VPN running local models)
+- [ ] Architecture overview page (one-page summary of how PSD/SPL/indices compose)
+- [ ] Migration notes if any API shifts before release
+
+** TODO Release infrastructure [#A] :release:pubs:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+- [ ] v1.0.0 git tag
+- [ ] JOSS paper draft (methods, validation summary, comparison to PAMGuide/MANTA/Triton)
+- [ ] Zenodo DOI for citation
+- [ ] README citation block
+- [ ] CHANGELOG.md with v1.0.0 entry
+
+* v1.1 Vessel Noise and Composability Release :ea:detection:
+
+The themed v1.1 release. Headlined by vessel-noise analysis as the substantive worked example of composing EA primitives.
+
+** TODO Vessel noise application of event detection primitive [#B] :detection:
+:PROPERTIES:
+:EFFORT:   1w
+:END:
+
+- [ ] Vessel-specific parameter presets for =detect_events= (duration ranges, band ratios for shipping)
+- [ ] Lloyd's-mirror striation analysis primitive (single-hydrophone range/speed estimation, optional)
+- [ ] Validation against AIS-labeled vessel passes
+- [ ] Documentation: parameter selection, known confounds (turbine tonals, weather, distant traffic)
+
+** TODO Vessel composability tutorial [#A] :docs:detection:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+- [ ] =examples/07_vessel_noise_analysis.jl= — substantive worked example
+- [ ] =docs/src/tutorials/extending_ea.md= — uses vessel noise as the canonical extending-EA tutorial
+- [ ] Composition story: band-limited SPL + LTSA + event detection → vessel pass characterization
+
+** TODO AIS-join primitive [#B] :detection:
+:PROPERTIES:
+:EFFORT:   3d
+:END:
+
+- [ ] Read AIS data (CSV or NMEA formats)
+- [ ] Join AIS spatiotemporal records to acoustic timeline
+- [ ] Validate vessel detections against AIS ground truth
+- [ ] Document gap: small recreational craft frequently run without AIS
+
+** TODO v1.1 release infrastructure [#B] :release:
+:PROPERTIES:
+:EFFORT:   1d
+:END:
+
+- [ ] v1.1.0 git tag
+- [ ] CHANGELOG.md update
+- [ ] Documentation site update
+
+* Deferred :ea:
+
+Items tracked but not blocking any release. Pulled in when triggered.
+
+** DEFERRED =aggregate_spl(spl; window) → AggregatedSPLResult=
+When first archive-scale time-windowed analysis appears.
+
+** DEFERRED Mode statistic revisit
+During soundscape indices work.
+
+** DEFERRED DEMON/LOFAR analysis for vessel characterization
+If source-level work becomes needed.
+
+** DEFERRED Architecture review from user perspective
+Small follow-up session, optional polish.
+
+* Completed :ea:
+
+** DONE Foundation layer
+CLOSED: prior to roadmap.org
+- Audiodata struct, calibration hierarchy (NoCalibration, ScalarCalibration, TFCalibration)
+- Recorder profiles (Rockhopper, LS1X, SM3M, SNAP)
+- Filename parser
+- read_audio with metadata merging
+- Spectrogram primitive with FFT plan support
+
+** DONE PSD layer
+CLOSED: prior to roadmap.org
+- compute_psd, average_psd, to_dB, PSDResult struct
+- MANTA validation: 0.05 dB max bin difference, 0.025 dB mean abs across 391 bins × 3 minutes
+
+** DONE SPL/TOL layer
+CLOSED: prior to roadmap.org
+- BandSPL, SPLResult, compute_spl, band-generator helpers
+- SPL documentation (spl.md, spl_bands.md)
+
+** DONE Code review remediation
+CLOSED: prior to roadmap.org
+- 20 findings addressed across 5 batches
+- Test warning cleanup (58 → 0)
+
+** DONE GitHub and Documenter infrastructure
+CLOSED: prior to roadmap.org
+- Repository reconnected, dev branch synced
+- Old code directory removed
+- Documenter pipeline deploying to gh-pages from dev branch
+
+** DONE PAMGuide validation and bug finding
+CLOSED: prior to roadmap.org
+- PAMGuide PSD validation tests (revealed DMON2 PSD discrepancy under investigation)
+- PAMGuide SPL validation tests (revealed PAMGuide broadband normalization bug)
+- Parseval ground-truth validation test (first-principles normalization check)
+- DD-24: SPL output convention follows Merchant Eq. 17; PAMGuide broadband output diverges by ENBW
+- Documented PAMGuide PG_DFT.m broadband bug (~1.76 dB for Hann) with source and Parseval evidence

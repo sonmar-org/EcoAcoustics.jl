@@ -1,0 +1,111 @@
+#+TITLE: Rockhopper Calibration — Notes for EA Integration
+#+AUTHOR: Robert
+#+DATE: 2026-06-29
+#+STARTUP: overview
+
+* TL;DR
+
+- The MANTA millidecade CSVs are ALREADY calibrated. For the talk/chapter you
+  integrate nothing — read the CSV levels (dB re 1 uPa^2/Hz) as-is.
+- Cornell produced the CSVs by feeding audio + the Rockhopper TF spreadsheet
+  into MANTA. The per-day netCDF is MANTA's assembled calibration/metadata
+  sidecar — same numbers, machine-side.
+- When EA computes levels from raw FLAC (the clean rerun), it must reproduce
+  the FULL spreadsheet chain — including the ADC / peak-to-RMS terms. Using only
+  the analog column drops EA ~14 dB below MANTA. This is the main trap.
+- netCDF =SysSensdB= is MANTA's fully-assembled system sensitivity → use it as
+  EA's calibration UNIT TEST target (EA assembled TF should match it ~0 dB).
+
+* What the two files are
+
+** Rockhopper_TF.xlsx  (human-readable source of truth)
+   Sheet =RH_calCurves= breaks the chain into columns:
+   - Frequency_Hz
+   - SensorSensitivity_dB_re_1V_perRefPress
+   - PreampGain_dB
+   - RecorderGain_dB
+   - AnalogSensitivity_dB_re_1VperRefPress   (= sensor + preamp + recorder, ANALOG ONLY)
+   - BitDepth (24), Vmax p-p (10 V), Peak to RMS (9.03 dB)   <- the ADC/digitization terms
+   - TF   (a folded curve in a different sign/reference convention)
+   NOTE: one shared sensor curve for all units, NOT per-unit columns.
+
+** <dep>_..._DAILY_MILLIDEC_MinRes_netCDF.nc  (MANTA sidecar, one per day)
+   - Holds the ASSEMBLED system sensitivity =SysSensdB= (length = Nyquist+1,
+     0..98684 Hz at 1 Hz) plus gain arrays and deployment metadata.
+   - =freq_response= is the FREQUENCY AXIS (0..98684), not a response curve.
+   - Byte-identical across days within a deployment (verified 2023-05-09 vs
+     2023-05-17). Keep ONE per deployment; the rest are redundant copies.
+   - Descriptive cal fields are unpopulated placeholders and should be IGNORED:
+     CalibrationDate = 1970-01-01 (epoch), CalibrationSensitivity = -60.0,
+     PhoneSensdB = NaN. (Do not infer "uncalibrated" from these — the real
+     calibration lives in =SysSensdB=.)
+
+* The key finding (why they agree)
+
+   netCDF SysSensdB  ==  xlsx AnalogSensitivity  −  ~13.97 dB
+   constant to within 0.02 dB across 100 Hz – 98 kHz.
+
+   The constant offset is the DIGITIZATION STAGE (ADC full-scale from
+   BitDepth/Vmax, plus Peak-to-RMS), which MANTA folded into SysSensdB and the
+   spreadsheet keeps in separate columns. Same transfer function, different
+   stage of the chain — NOT two competing calibrations.
+
+   => The CSVs are calibrated with Cornell's TF. No stray/nominal HTI curve.
+
+* EA integration plan (raw-FLAC path)
+
+** Build the FULL chain, in this order
+   System sensitivity (dB) =
+     SensorSensitivity + PreampGain + RecorderGain        (analog)
+     + ADC term (from BitDepth, Vmax)                     (digitization)
+     + Peak-to-RMS (9.03 dB)
+   This must equal netCDF =SysSensdB= (~0 dB difference), not the analog-only
+   column (~14 dB difference). If EA sits ~14 dB low, the ADC/P2RMS terms are
+   missing — that is the expected failure mode, not a real bug.
+
+** Source of truth = the SPREADSHEET, not the netCDF
+   - Spreadsheet: citable, per-stage, one file for all units → EA input.
+   - netCDF SysSensdB: MANTA-derived, assembled → EA calibration TEST TARGET.
+
+** OPEN QUESTION — confirm the 9.03 dB Peak-to-RMS term
+   The spreadsheet's "Peak to RMS" = 9.03 dB. This is NOT the 3.01 dB of a pure
+   sine, so it encodes a specific assumption (crest factor, or a combined
+   ADC-reference + crest term). It is part of the ~14 dB EA must reproduce
+   exactly, so EA's number must match whatever this represents. ACTION: confirm
+   with Cornell what 9.03 dB is and how MANTA applies it before trusting EA's
+   absolute levels. (Value pulled from the spreadsheet column; derivation not
+   yet verified.)
+
+* Validation discipline (EA vs MANTA)
+
+  "Same results from EA or MANTA" has THREE independent divergence points.
+  Test them SEPARATELY and in order; do not validate end-to-end only, or a
+  mismatch won't tell you which stage failed.
+
+  1. CALIBRATION  — EA assembled TF vs netCDF SysSensdB. Isolatable; do first.
+  2. SPECTRAL EST — Welch/FFT params vs MANTA (window, overlap, segment length,
+     averaging). Two correct PSDs with different windows differ in level.
+  3. BANDING      — hybrid-millidecade edges + integration vs MANTA.
+     (Hybrid = 1 Hz linear below ~440 Hz, millidecade above — match band-for-band.)
+
+** Set the tolerance UP FRONT
+   Bit-exact agreement is unrealistic (FFT lib, windowing, FP order leave
+   sub-dB residuals) and is the WRONG bar. Decide a tolerance now, e.g.
+   |EA − MANTA| <= 0.5 dB per band, so "validated" has a definition and we
+   are not chasing 0.01 dB ghosts. Goal = faithful calibrated reimplementation,
+   not a byte-clone.
+
+* Deployment facts (for reference)
+  - Deployment ID: 139635MD01 ; Sensor: RH418_A5M.1.197368
+  - Fs = 197368 Hz ; Nyquist = 98684 Hz (millidecade ceiling)
+  - CSV: row 1 = freq vector (prefixed by timestamp + 60 s avg window);
+    each subsequent row = one 60 s minute; comma-separated; ~1440 rows/day.
+  - Levels already in dB re 1 uPa^2/Hz.
+
+* Methods-section note
+  A single shared Rockhopper TF was applied across all units (no per-unit
+  measured cals). Legitimate and common, but document it honestly and note it
+  caps how finely ABSOLUTE levels can be compared BETWEEN sites. WITHIN-site
+  relative structure (the talk's argument) is unaffected.
+
+  

@@ -744,3 +744,68 @@ derived from the band generator.
 
 **Where:** `compute_spl` signatures in `src/soundscape/spl.jl`. Validation tests
 updated in `test/test_spl.jl` and `test/test_spl_pamguide_validation.jl`.
+
+---
+
+## Session: LTSA (task 11)
+
+### DD-28 — LTSA columns: energetic-mean only, non-overlapping, partial column dropped
+
+**Decided:** `compute_ltsa` builds a long-term spectral average as a frequency ×
+time matrix of **linear** PSD. Three sub-decisions:
+
+1. **Energetic mean only.** Each column is the mean of its FFT frames in linear
+   power (µPa²/Hz), computed by reusing [`average_psd`](@ref). There is no
+   dB-mean and no median column mode in this implementation.
+2. **Non-overlapping, consecutive columns.** Column `j` covers samples
+   `(j-1)·S+1 .. j·S` where `S = round(Int, average_span_seconds × fs)`. Columns
+   never overlap and the inner FFT frames of one column never cross into an
+   adjacent column (each column runs its own `spectrogram` on its own slice).
+3. **Trailing partial column dropped.** `n_columns = div(nsamples, S)` (integer
+   floor). If the audio length is not an exact multiple of the column span, the
+   final `< S` samples appear in no column.
+
+**Why:**
+
+- *Energetic mean* is the same convention as `average_psd` (DD-16) and
+  `compute_spl` band integration (DD-22): averaging in linear power is the
+  physically correct operation and matches Merchant et al. (2015). Averaging in
+  dB underestimates power when the level varies within a column, which it always
+  does in real data. dB-mean/median modes are deferred until a concrete need
+  appears — adding them later is non-breaking (new keyword), so building them
+  speculatively now would be overengineering.
+- *Non-overlapping columns* give each time column an unambiguous, disjoint span,
+  which is what downstream band time series and percentile-over-time analysis
+  require. Overlapping columns would double-count samples and correlate adjacent
+  columns, corrupting percentile statistics. Overlap is deferred (non-breaking
+  to add later via a stride keyword).
+- *Dropping the partial column* keeps every emitted column a true
+  `average_span_seconds` average. A short final column would have a different
+  averaging time and therefore a different variance, silently biasing any
+  statistic taken across columns. It is dropped rather than zero-padded (padding
+  would depress its level) or emitted short (would break the uniform time grid).
+
+**The LTSA matrix is the reusable pre-aggregation product.** It is stored in
+linear units, not dB, precisely so that arbitrary frequency bands (TOLs, octave
+bands, hand-picked exploratory bands — see `CANDIDATE_ACOUSTIC_BANDS.org`) can be
+integrated out of the *same* matrix without re-reading audio, and percentiles can
+be taken down the time axis. `to_dB(::LTSAResult)` is display-only and does not
+mutate the stored matrix.
+
+**Calibration resolved once.** `compute_ltsa` resolves calibration a single time
+before the column loop (via the same `_psd_calibration` cascade as `compute_psd`,
+DD-14), so a missing-calibration warning fires at most once rather than per
+column. `is_calibrated` follows the pre-calibrated-propagation rule from DD-14:
+`audio.is_calibrated || !(resolved_cal isa NoCalibration)`. `ltsa_units`
+dispatches on that flag, mirroring `psd_units` (DD-15).
+
+**Composition, not reimplementation.** Each column is
+`average_psd(compute_psd(spectrogram(slice)))`. `compute_ltsa` adds only the
+column loop, matrix assembly, and axis bookkeeping — it introduces no new
+spectral-estimation or normalization math. This is verified by the
+energetic-mean-equivalence test: a column equals `compute_psd` + `average_psd`
+over the same span bit-for-bit.
+
+**Where:** `src/soundscape/ltsa.jl` (`LTSAResult`, `compute_ltsa`, `_ltsa_column`,
+`ltsa_units`, `to_dB`). Tests in `test/test_ltsa.jl`. Explanation in
+`docs/src/explanations/ltsa.md`.

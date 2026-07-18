@@ -28,4 +28,5 @@ const TEST_DIR = joinpath(@__DIR__, "test_files")
     include("test_spl_pamguide_validation.jl")
     include("test_spl.jl")
     include("test_bands.jl")
+    include("test_ltsa.jl")
 end
